@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.35;
 
-import { IERC20 }    from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
-import { SafeERC20 } from '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol';
+import { IERC20 }          from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
+import { SafeERC20 }       from '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol';
+import { Ownable }         from '@openzeppelin/contracts/access/Ownable.sol';
+import { Ownable2Step }    from '@openzeppelin/contracts/access/Ownable2Step.sol';
+import { Pausable }        from '@openzeppelin/contracts/utils/Pausable.sol';
 import { ReentrancyGuard } from '@openzeppelin/contracts/utils/ReentrancyGuard.sol';
 
 import { IOFT, SendParam }                from '@layerzerolabs/lz-evm-oapp-v2/contracts/oft/interfaces/IOFT.sol';
@@ -25,8 +28,9 @@ import { IUtexoSourceEntrypoint } from './interfaces/IUtexoSourceEntrypoint.sol'
 ///                                                               └──────────────────────┘
 ///
 ///     Properties:
-///       • Stateless — only immutables.
-///       • Non-upgradeable. Replacement = redeploy; no owner, no pause, no admin.
+///       • Owner-controlled emergency pause for deposits, with two-step
+///         ownership transfers and ownership renunciation disabled.
+///       • Non-upgradeable. Replacement = redeploy.
 ///       • `dstEid` and `lzAdapter` are fixed at construction and cannot be
 ///         re-pointed at a different destination by the caller or anyone else.
 ///       • `composeMsg` is built by the entrypoint as
@@ -43,8 +47,10 @@ import { IUtexoSourceEntrypoint } from './interfaces/IUtexoSourceEntrypoint.sol'
 ///         and the `sourceChainId` part is non-spoofable.
 ///       • LayerZero fee is re-quoted on-chain; surplus `msg.value` is refunded to
 ///         `msg.sender`.
-contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, ReentrancyGuard {
+contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
+
+    error OwnershipRenunciationDisabled();
 
     // =========================================================================
     // Immutables
@@ -78,7 +84,7 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, ReentrancyGuard {
         address oft_,
         uint32  dstEid_,
         bytes32 lzAdapter_
-    ) {
+    ) Ownable(msg.sender) {
         if (token_ == address(0))      revert InvalidTokenAddress();
         if (oft_ == address(0))        revert InvalidOftAddress();
         if (dstEid_ == 0)              revert InvalidDstEid();
@@ -99,6 +105,7 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, ReentrancyGuard {
         external
         payable
         override
+        whenNotPaused
         nonReentrant
         returns (bytes32 guid)
     {
@@ -209,5 +216,24 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, ReentrancyGuard {
             oftCmd:       ''
         });
         return IOFT(oft).quoteSend(sp, false).nativeFee;
+    }
+
+    // =========================================================================
+    // Owner actions
+    // =========================================================================
+
+    /// @notice Pauses deposits.
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /// @notice Resumes deposits.
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    /// @notice Ownership cannot be renounced to preserve access to emergency controls.
+    function renounceOwnership() public pure override {
+        revert OwnershipRenunciationDisabled();
     }
 }
