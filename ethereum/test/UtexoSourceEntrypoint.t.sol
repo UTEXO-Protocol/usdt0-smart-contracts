@@ -2,6 +2,8 @@
 pragma solidity 0.8.35;
 
 import { Test } from 'forge-std/Test.sol';
+import { Ownable } from '@openzeppelin/contracts/access/Ownable.sol';
+import { Pausable } from '@openzeppelin/contracts/utils/Pausable.sol';
 
 import { UtexoSourceEntrypoint } from '../src/UtexoSourceEntrypoint.sol';
 import { IUtexoSourceEntrypoint } from '../src/interfaces/IUtexoSourceEntrypoint.sol';
@@ -42,7 +44,9 @@ contract UtexoSourceEntrypointTest is Test {
     uint256 constant NATIVE_FEE = 0.01 ether;
 
     // -- Actors ---------------------------------------------------------------
-    address user = makeAddr('user');
+    address user         = makeAddr('user');
+    address owner        = makeAddr('owner');
+    address pendingOwner = makeAddr('pendingOwner');
 
     // -- SUT ------------------------------------------------------------------
     MockERC20 token;
@@ -58,7 +62,8 @@ contract UtexoSourceEntrypointTest is Test {
             address(token),
             address(oft),
             DST_EID,
-            LZ_ADAPTER
+            LZ_ADAPTER,
+            owner
         );
 
         token.mint(user, 1_000_000e6);
@@ -76,24 +81,171 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(entrypoint.lzAdapter(),      LZ_ADAPTER,     'lzAdapter');
     }
 
+    function test_constructor_setsConfiguredOwner() public view {
+        assertEq(entrypoint.owner(), owner, 'configured owner');
+        assertEq(entrypoint.pendingOwner(), address(0), 'no pending owner');
+        assertFalse(entrypoint.paused(), 'not paused');
+    }
+
+    function test_constructor_revertsOnZeroOwner() public {
+        vm.expectRevert(abi.encodeWithSelector(
+            Ownable.OwnableInvalidOwner.selector,
+            address(0)
+        ));
+        new UtexoSourceEntrypoint(
+            address(token), address(oft), DST_EID, LZ_ADAPTER, address(0)
+        );
+    }
+
     function test_constructor_revertsOnZeroToken() public {
         vm.expectRevert(IUtexoSourceEntrypoint.InvalidTokenAddress.selector);
-        new UtexoSourceEntrypoint(address(0), address(oft), DST_EID, LZ_ADAPTER);
+        new UtexoSourceEntrypoint(address(0), address(oft), DST_EID, LZ_ADAPTER, owner);
     }
 
     function test_constructor_revertsOnZeroOft() public {
         vm.expectRevert(IUtexoSourceEntrypoint.InvalidOftAddress.selector);
-        new UtexoSourceEntrypoint(address(token), address(0), DST_EID, LZ_ADAPTER);
+        new UtexoSourceEntrypoint(address(token), address(0), DST_EID, LZ_ADAPTER, owner);
     }
 
     function test_constructor_revertsOnZeroEid() public {
         vm.expectRevert(IUtexoSourceEntrypoint.InvalidDstEid.selector);
-        new UtexoSourceEntrypoint(address(token), address(oft), 0, LZ_ADAPTER);
+        new UtexoSourceEntrypoint(address(token), address(oft), 0, LZ_ADAPTER, owner);
     }
 
     function test_constructor_revertsOnZeroLZAdapter() public {
         vm.expectRevert(IUtexoSourceEntrypoint.InvalidLZAdapter.selector);
-        new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, bytes32(0));
+        new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, bytes32(0), owner);
+    }
+
+    // =========================================================================
+    // Ownership
+    // =========================================================================
+
+    function test_transferOwnership_requiresPendingOwnerAcceptance() public {
+        vm.prank(owner);
+        entrypoint.transferOwnership(pendingOwner);
+
+        assertEq(entrypoint.owner(), owner, 'owner unchanged before acceptance');
+        assertEq(entrypoint.pendingOwner(), pendingOwner, 'pending owner set');
+
+        vm.prank(pendingOwner);
+        entrypoint.acceptOwnership();
+
+        assertEq(entrypoint.owner(), pendingOwner, 'ownership accepted');
+        assertEq(entrypoint.pendingOwner(), address(0), 'pending owner cleared');
+
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(
+            Ownable.OwnableUnauthorizedAccount.selector,
+            owner
+        ));
+        entrypoint.pause();
+
+        vm.prank(pendingOwner);
+        entrypoint.pause();
+        assertTrue(entrypoint.paused(), 'new owner controls pause');
+    }
+
+    function test_transferOwnership_revertsForNonOwner() public {
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(
+            Ownable.OwnableUnauthorizedAccount.selector,
+            user
+        ));
+        entrypoint.transferOwnership(pendingOwner);
+    }
+
+    function test_acceptOwnership_revertsForNonPendingOwner() public {
+        vm.prank(owner);
+        entrypoint.transferOwnership(pendingOwner);
+
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(
+            Ownable.OwnableUnauthorizedAccount.selector,
+            user
+        ));
+        entrypoint.acceptOwnership();
+    }
+
+    function test_renounceOwnership_isDisabled() public {
+        vm.prank(owner);
+        vm.expectRevert(UtexoSourceEntrypoint.OwnershipRenunciationDisabled.selector);
+        entrypoint.renounceOwnership();
+
+        assertEq(entrypoint.owner(), owner, 'owner preserved');
+    }
+
+    // =========================================================================
+    // Pause
+    // =========================================================================
+
+    function test_pauseAndUnpause_areRestrictedToOwner() public {
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(
+            Ownable.OwnableUnauthorizedAccount.selector,
+            user
+        ));
+        entrypoint.pause();
+
+        vm.prank(owner);
+        entrypoint.pause();
+        assertTrue(entrypoint.paused(), 'paused');
+
+        vm.prank(user);
+        vm.expectRevert(abi.encodeWithSelector(
+            Ownable.OwnableUnauthorizedAccount.selector,
+            user
+        ));
+        entrypoint.unpause();
+
+        vm.prank(owner);
+        entrypoint.unpause();
+        assertFalse(entrypoint.paused(), 'unpaused');
+    }
+
+    function test_pause_revertsWhenAlreadyPaused() public {
+        vm.startPrank(owner);
+        entrypoint.pause();
+
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        entrypoint.pause();
+        vm.stopPrank();
+    }
+
+    function test_unpause_revertsWhenNotPaused() public {
+        vm.prank(owner);
+        vm.expectRevert(Pausable.ExpectedPause.selector);
+        entrypoint.unpause();
+    }
+
+    function test_deposit_revertsWhilePaused_withoutMovingFunds() public {
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(100e6);
+        uint256 userTokenBalanceBefore = token.balanceOf(user);
+        uint256 userNativeBalanceBefore = user.balance;
+
+        vm.prank(owner);
+        entrypoint.pause();
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        entrypoint.deposit{ value: NATIVE_FEE }(p);
+        vm.stopPrank();
+
+        assertEq(token.balanceOf(user), userTokenBalanceBefore, 'user tokens unchanged');
+        assertEq(user.balance, userNativeBalanceBefore, 'user native unchanged');
+        assertEq(token.balanceOf(address(entrypoint)), 0, 'entrypoint holds no tokens');
+        assertEq(token.balanceOf(address(oft)), 0, 'oft untouched');
+        assertEq(address(entrypoint).balance, 0, 'entrypoint holds no native');
+    }
+
+    function test_quote_remainsAvailableWhilePaused() public {
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(5e6);
+
+        vm.prank(owner);
+        entrypoint.pause();
+
+        assertEq(entrypoint.quote(p), NATIVE_FEE, 'quote remains available');
     }
 
     // =========================================================================
