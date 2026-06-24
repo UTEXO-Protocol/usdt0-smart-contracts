@@ -67,6 +67,28 @@ async function waitForTxInfo(txid) {
   throw new Error(`waitForTxInfo: tx ${txid} did not confirm within ${POLL_TIMEOUT_MS}ms`);
 }
 
+/** Waits for a successful state-changing transaction to be confirmed. */
+async function sendAndConfirm(sendPromise) {
+  const result = await sendPromise;
+  const txid = typeof result === 'string'
+    ? result
+    : (result && (result.txid || result.transaction?.txID));
+
+  if (!txid) {
+    throw new Error(`sendAndConfirm: transaction id missing in ${JSON.stringify(result)}`);
+  }
+
+  const info = await waitForTxInfo(txid);
+  const receiptResult = info.receipt && info.receipt.result;
+  if (receiptResult && receiptResult !== 'SUCCESS') {
+    assert.fail(`Transaction ${txid} failed with ${receiptResult}`);
+  }
+  if (info.result === 'FAILED') {
+    assert.fail(`Transaction ${txid} failed`);
+  }
+  return info;
+}
+
 /**
  * Asserts that the call resulted in an on-chain revert. Accepts either:
  *   - a builder chain that ends in `.send(opts)` (we await it and poll), or
@@ -153,6 +175,20 @@ contract('UtexoSourceEntrypoint', () => {
   let entrypoint;
   let payload;
   let deployerAddr;
+  let ownerAccount;
+  let pendingOwnerAccount;
+
+  before(async () => {
+    ownerAccount = await tronWeb.createAccount();
+    pendingOwnerAccount = await tronWeb.createAccount();
+
+    await sendAndConfirm(
+      tronWeb.trx.sendTransaction(ownerAccount.address.base58, 1_000_000_000)
+    );
+    await sendAndConfirm(
+      tronWeb.trx.sendTransaction(pendingOwnerAccount.address.base58, 1_000_000_000)
+    );
+  });
 
   beforeEach(async () => {
     deployerAddr = tronWeb.defaultAddress.base58;
@@ -167,7 +203,8 @@ contract('UtexoSourceEntrypoint', () => {
       token.address,
       oft.address,
       DST_EID,
-      LZ_ADAPTER
+      LZ_ADAPTER,
+      ownerAccount.address.base58
     );
 
     // Fund the deployer with 1M USDT (6 decimals).
@@ -201,28 +238,249 @@ contract('UtexoSourceEntrypoint', () => {
       assert.equal(got.toLowerCase(), LZ_ADAPTER.toLowerCase());
     });
 
+    it('stores the configured owner independently from the deployer', async () => {
+      const got = await entrypoint.owner().call();
+      assert.equal(
+        tronAddrTo20ByteHex(got),
+        tronAddrTo20ByteHex(ownerAccount.address.base58)
+      );
+      assert.notEqual(
+        tronAddrTo20ByteHex(got),
+        tronAddrTo20ByteHex(deployerAddr)
+      );
+    });
+
+    it('starts without a pending owner and is not paused', async () => {
+      const pending = await entrypoint.pendingOwner().call();
+      assert.equal(tronAddrTo20ByteHex(pending), ZERO_ADDR_HEX);
+      assert.isFalse(await entrypoint.paused().call());
+    });
+
+    it('reverts on zero owner', async () => {
+      await deployExpectRevert(
+        UtexoSourceEntrypoint._json,
+        token.address,
+        oft.address,
+        DST_EID,
+        LZ_ADAPTER,
+        ZERO_ADDR_HEX
+      );
+    });
+
     it('reverts on zero token', async () => {
       await deployExpectRevert(
-        UtexoSourceEntrypoint._json, ZERO_ADDR_HEX, oft.address, DST_EID, LZ_ADAPTER
+        UtexoSourceEntrypoint._json,
+        ZERO_ADDR_HEX,
+        oft.address,
+        DST_EID,
+        LZ_ADAPTER,
+        ownerAccount.address.base58
       );
     });
 
     it('reverts on zero oft', async () => {
       await deployExpectRevert(
-        UtexoSourceEntrypoint._json, token.address, ZERO_ADDR_HEX, DST_EID, LZ_ADAPTER
+        UtexoSourceEntrypoint._json,
+        token.address,
+        ZERO_ADDR_HEX,
+        DST_EID,
+        LZ_ADAPTER,
+        ownerAccount.address.base58
       );
     });
 
     it('reverts on zero dstEid', async () => {
       await deployExpectRevert(
-        UtexoSourceEntrypoint._json, token.address, oft.address, 0, LZ_ADAPTER
+        UtexoSourceEntrypoint._json,
+        token.address,
+        oft.address,
+        0,
+        LZ_ADAPTER,
+        ownerAccount.address.base58
       );
     });
 
     it('reverts on zero lzAdapter', async () => {
       await deployExpectRevert(
-        UtexoSourceEntrypoint._json, token.address, oft.address, DST_EID, ZERO_BYTES32
+        UtexoSourceEntrypoint._json,
+        token.address,
+        oft.address,
+        DST_EID,
+        ZERO_BYTES32,
+        ownerAccount.address.base58
       );
+    });
+  });
+
+  // ===========================================================================
+  // Ownership
+  // ===========================================================================
+
+  describe('Ownership', () => {
+    it('transfers ownership only after the pending owner accepts', async () => {
+      await sendAndConfirm(
+        entrypoint.transferOwnership(pendingOwnerAccount.address.base58).send(
+          { feeLimit: FEE_LIMIT },
+          ownerAccount.privateKey
+        )
+      );
+
+      assert.equal(
+        tronAddrTo20ByteHex(await entrypoint.owner().call()),
+        tronAddrTo20ByteHex(ownerAccount.address.base58),
+        'owner unchanged before acceptance'
+      );
+      assert.equal(
+        tronAddrTo20ByteHex(await entrypoint.pendingOwner().call()),
+        tronAddrTo20ByteHex(pendingOwnerAccount.address.base58),
+        'pending owner set'
+      );
+
+      await sendAndConfirm(
+        entrypoint.acceptOwnership().send(
+          { feeLimit: FEE_LIMIT },
+          pendingOwnerAccount.privateKey
+        )
+      );
+
+      assert.equal(
+        tronAddrTo20ByteHex(await entrypoint.owner().call()),
+        tronAddrTo20ByteHex(pendingOwnerAccount.address.base58),
+        'ownership accepted'
+      );
+      assert.equal(
+        tronAddrTo20ByteHex(await entrypoint.pendingOwner().call()),
+        ZERO_ADDR_HEX,
+        'pending owner cleared'
+      );
+
+      await sendExpectRevert(
+        entrypoint.pause().send({ feeLimit: FEE_LIMIT }, ownerAccount.privateKey)
+      );
+      await sendAndConfirm(
+        entrypoint.pause().send({ feeLimit: FEE_LIMIT }, pendingOwnerAccount.privateKey)
+      );
+      assert.isTrue(await entrypoint.paused().call(), 'new owner controls pause');
+    });
+
+    it('rejects ownership transfer from a non-owner', async () => {
+      await sendExpectRevert(
+        entrypoint.transferOwnership(pendingOwnerAccount.address.base58).send({
+          feeLimit: FEE_LIMIT,
+        })
+      );
+    });
+
+    it('rejects ownership acceptance from a non-pending owner', async () => {
+      await sendAndConfirm(
+        entrypoint.transferOwnership(pendingOwnerAccount.address.base58).send(
+          { feeLimit: FEE_LIMIT },
+          ownerAccount.privateKey
+        )
+      );
+
+      await sendExpectRevert(
+        entrypoint.acceptOwnership().send({ feeLimit: FEE_LIMIT })
+      );
+    });
+
+    it('disables ownership renunciation', async () => {
+      await sendExpectRevert(
+        entrypoint.renounceOwnership().send(
+          { feeLimit: FEE_LIMIT },
+          ownerAccount.privateKey
+        )
+      );
+
+      assert.equal(
+        tronAddrTo20ByteHex(await entrypoint.owner().call()),
+        tronAddrTo20ByteHex(ownerAccount.address.base58),
+        'owner preserved'
+      );
+    });
+  });
+
+  // ===========================================================================
+  // Pause
+  // ===========================================================================
+
+  describe('Pause', () => {
+    it('restricts pause and unpause to the owner', async () => {
+      await sendExpectRevert(
+        entrypoint.pause().send({ feeLimit: FEE_LIMIT })
+      );
+
+      await sendAndConfirm(
+        entrypoint.pause().send({ feeLimit: FEE_LIMIT }, ownerAccount.privateKey)
+      );
+      assert.isTrue(await entrypoint.paused().call(), 'paused');
+
+      await sendExpectRevert(
+        entrypoint.unpause().send({ feeLimit: FEE_LIMIT })
+      );
+
+      await sendAndConfirm(
+        entrypoint.unpause().send({ feeLimit: FEE_LIMIT }, ownerAccount.privateKey)
+      );
+      assert.isFalse(await entrypoint.paused().call(), 'unpaused');
+    });
+
+    it('rejects pause when already paused', async () => {
+      await sendAndConfirm(
+        entrypoint.pause().send({ feeLimit: FEE_LIMIT }, ownerAccount.privateKey)
+      );
+      await sendExpectRevert(
+        entrypoint.pause().send({ feeLimit: FEE_LIMIT }, ownerAccount.privateKey)
+      );
+    });
+
+    it('rejects unpause when not paused', async () => {
+      await sendExpectRevert(
+        entrypoint.unpause().send({ feeLimit: FEE_LIMIT }, ownerAccount.privateKey)
+      );
+    });
+
+    it('blocks deposits without moving tokens while paused', async () => {
+      const deployerBalanceBefore = await token.balanceOf(deployerAddr).call();
+
+      await sendAndConfirm(
+        entrypoint.pause().send({ feeLimit: FEE_LIMIT }, ownerAccount.privateKey)
+      );
+      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+
+      await sendExpectRevert(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
+
+      assert.equal(
+        (await token.balanceOf(deployerAddr).call()).toString(),
+        deployerBalanceBefore.toString(),
+        'deployer tokens unchanged'
+      );
+      assert.equal(
+        (await token.balanceOf(entrypoint.address).call()).toString(),
+        '0',
+        'entrypoint holds no tokens'
+      );
+      assert.equal(
+        (await token.balanceOf(oft.address).call()).toString(),
+        '0',
+        'oft untouched'
+      );
+    });
+
+    it('keeps quote available while paused', async () => {
+      await sendAndConfirm(
+        entrypoint.pause().send({ feeLimit: FEE_LIMIT }, ownerAccount.privateKey)
+      );
+
+      const quoted = await entrypoint.quote(
+        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+      ).call();
+
+      assert.equal(quoted.toString(), String(NATIVE_FEE));
     });
   });
 
