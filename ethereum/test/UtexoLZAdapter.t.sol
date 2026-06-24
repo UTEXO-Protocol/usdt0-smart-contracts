@@ -893,6 +893,9 @@ contract UtexoLZAdapterTest is Test {
 
         assertEq(token.balanceOf(address(bridge)), amount,          'bridge received tokens');
         assertEq(bridge.lastSourceChainId(),       SOURCE_CHAIN_ID, 'sourceChainId forwarded');
+    }
+
+    // =========================================================================
     // lzCompose — credited amount accounting
     // =========================================================================
 
