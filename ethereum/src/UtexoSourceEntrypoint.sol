@@ -79,12 +79,14 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     /// @param dstEid_     LayerZero endpoint id of the destination chain (Arbitrum).
     /// @param lzAdapter_  `UtexoLZAdapter` address on the destination chain, encoded
     ///                    as bytes32 (address left-padded, per LayerZero V2 convention).
+    /// @param initialOwner_  Address that receives ownership at deployment.
     constructor(
         address token_,
         address oft_,
         uint32  dstEid_,
-        bytes32 lzAdapter_
-    ) Ownable(msg.sender) {
+        bytes32 lzAdapter_,
+        address initialOwner_
+    ) Ownable(initialOwner_) {
         if (token_ == address(0))      revert InvalidTokenAddress();
         if (oft_ == address(0))        revert InvalidOftAddress();
         if (dstEid_ == 0)              revert InvalidDstEid();
