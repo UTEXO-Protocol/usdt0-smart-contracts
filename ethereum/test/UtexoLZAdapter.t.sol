@@ -397,6 +397,49 @@ contract UtexoLZAdapterTest is Test {
         assertEq(rec.nativeValue, 0, 'no record on success');
     }
 
+    /// @dev A second failed compose under a guid that
+    ///      already has a parked record must revert rather than overwrite it,
+    ///      so the originally stranded funds stay recoverable via
+    ///      `refundStuckFunds`. LayerZero guids are unique per packet, so this
+    ///      is defensive hardening, exercised here directly.
+    function test_lzCompose_duplicateGuidFailure_revertsAndPreservesRecord() public {
+        bridge.setReverts(true);
+
+        bytes32 guid = bytes32('dup-guid');
+
+        // First failed compose parks a record under `guid`.
+        uint256 amount1 = 1e6;
+        token.mint(address(adapter), amount1);
+        bytes memory message1 = _encodeCompose(
+            uint64(1), SRC_EID, amount1, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('first'), uint256(1), EMPTY_SETTLEMENT_DATA)
+        );
+        vm.prank(endpoint);
+        adapter.lzCompose(address(oft), guid, message1, address(0), '');
+
+        IUtexoLZAdapter.StuckFunds memory first = adapter.getStuckFunds(guid);
+        assertEq(first.amountLD,    amount1, 'record parked by first compose');
+        assertEq(first.operationId, 1,       'first opId parked');
+
+        // Second failed compose with the SAME guid but different fields must
+        // revert, leaving the original record untouched.
+        uint256 amount2 = 5e6;
+        token.mint(address(adapter), amount2);
+        bytes memory message2 = _encodeCompose(
+            uint64(2), SRC_EID, amount2, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('second'), uint256(2), EMPTY_SETTLEMENT_DATA)
+        );
+        vm.prank(endpoint);
+        vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.StuckFundsAlreadyExist.selector, guid));
+        adapter.lzCompose(address(oft), guid, message2, address(0), '');
+
+        // Original record preserved — not clobbered by the second attempt.
+        IUtexoLZAdapter.StuckFunds memory afterAttempt = adapter.getStuckFunds(guid);
+        assertEq(afterAttempt.amountLD,           amount1, 'amountLD unchanged');
+        assertEq(afterAttempt.operationId,        1,       'opId unchanged');
+        assertEq(afterAttempt.destinationAddress, 'first', 'destAddr unchanged');
+    }
+
     // =========================================================================
     // sendOut — outbound (FundsOut) happy paths
     // =========================================================================
