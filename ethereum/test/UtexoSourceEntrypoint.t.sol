@@ -461,6 +461,65 @@ contract UtexoSourceEntrypointTest is Test {
         entrypoint.quote(p);
     }
 
+    /// @dev Deposit rejects an oversized destinationAddress before
+    ///      pulling tokens or paying any LZ fee.
+    function test_deposit_revertsOnOversizedDestinationAddress() public {
+        uint256 cap = entrypoint.MAX_DESTINATION_ADDRESS_LENGTH();
+        IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
+            amountLD:     10e6,
+            minAmountLD:  10e6,
+            extraOptions: hex'0003',
+            payload:      abi.encode(DEST_CHAIN_ID, string(new bytes(cap + 1)), OPERATION_ID, EMPTY_SETTLEMENT_DATA),
+            refundTo:     address(0)
+        });
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoSourceEntrypoint.DestinationAddressTooLong.selector, cap + 1, cap
+        ));
+        entrypoint.deposit{ value: NATIVE_FEE }(p);
+        vm.stopPrank();
+
+        assertEq(token.balanceOf(address(oft)),        0, 'oft untouched');
+        assertEq(token.balanceOf(address(entrypoint)), 0, 'entrypoint did not pull');
+    }
+
+    /// @dev DestinationAddress exactly at the cap deposits fine.
+    function test_deposit_acceptsDestinationAddressAtMaxBoundary() public {
+        IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
+            amountLD:     10e6,
+            minAmountLD:  10e6,
+            extraOptions: hex'0003',
+            payload:      abi.encode(DEST_CHAIN_ID, string(new bytes(entrypoint.MAX_DESTINATION_ADDRESS_LENGTH())), OPERATION_ID, EMPTY_SETTLEMENT_DATA),
+            refundTo:     address(0)
+        });
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        bytes32 guid = entrypoint.deposit{ value: NATIVE_FEE }(p);
+        vm.stopPrank();
+
+        assertEq(guid, keccak256(abi.encode('mock-guid', uint64(1))), 'deposit succeeds at cap boundary');
+    }
+
+    /// @dev Quote applies the same cap as deposit.
+    function test_quote_revertsOnOversizedDestinationAddress() public {
+        uint256 cap = entrypoint.MAX_DESTINATION_ADDRESS_LENGTH();
+        IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
+            amountLD:     10e6,
+            minAmountLD:  10e6,
+            extraOptions: hex'0003',
+            payload:      abi.encode(DEST_CHAIN_ID, string(new bytes(cap + 1)), OPERATION_ID, EMPTY_SETTLEMENT_DATA),
+            refundTo:     address(0)
+        });
+
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoSourceEntrypoint.DestinationAddressTooLong.selector, cap + 1, cap
+        ));
+        entrypoint.quote(p);
+    }
+
     // =========================================================================
     // Reverts
     // =========================================================================

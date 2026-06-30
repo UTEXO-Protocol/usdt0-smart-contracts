@@ -480,6 +480,44 @@ contract UtexoLZAdapterTest is Test {
         assertEq(adapter.getStuckFunds(bytes32('ok-guid')).amountLD, 0, 'no stuck record at boundary');
     }
 
+    /// @dev An inbound compose whose destinationAddress exceeds the cap
+    ///      is rejected right after decode.
+    function test_lzCompose_revertsOnOversizedDestinationAddress() public {
+        uint256 amount = 1e6;
+        token.mint(address(adapter), amount);
+
+        uint256 cap = adapter.MAX_DESTINATION_ADDRESS_LENGTH();
+        string memory tooLong = string(new bytes(cap + 1));
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, tooLong, uint256(1), EMPTY_SETTLEMENT_DATA)
+        );
+
+        vm.prank(endpoint);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.DestinationAddressTooLong.selector, cap + 1, cap
+        ));
+        adapter.lzCompose(address(oft), bytes32('long-addr-guid'), message, address(0), '');
+    }
+
+    /// @dev DestinationAddress exactly at the cap flows through.
+    function test_lzCompose_acceptsDestinationAddressAtMaxBoundary() public {
+        uint256 amount = 1e6;
+        token.mint(address(adapter), amount);
+
+        string memory atMax = string(new bytes(adapter.MAX_DESTINATION_ADDRESS_LENGTH()));
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, atMax, uint256(1), EMPTY_SETTLEMENT_DATA)
+        );
+
+        vm.prank(endpoint);
+        adapter.lzCompose(address(oft), bytes32('ok-addr-guid'), message, address(0), '');
+
+        assertEq(token.balanceOf(address(bridge)), amount, 'forwarded to bridge at cap boundary');
+        assertEq(adapter.getStuckFunds(bytes32('ok-addr-guid')).amountLD, 0, 'no stuck record at boundary');
+    }
+
     // =========================================================================
     // sendOut — outbound (FundsOut) happy paths
     // =========================================================================
