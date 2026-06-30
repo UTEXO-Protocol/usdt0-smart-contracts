@@ -56,23 +56,15 @@ interface IUtexoLZAdapter {
     error InvalidRecipient();
     error InvalidSrcEid();
     error InvalidChainId();
-
     error NotEndpoint();
     error NotMultisigProxy();
     error NotFromOft();
-
     error ZeroAmount();
     error InsufficientNativeFee(uint256 provided, uint256 required);
     error NativeRefundFailed();
-
     error NoStuckFunds(bytes32 guid);
-
-    /// @notice `lzCompose` caller is not the entrypoint registered for the
-    ///         message's transport `srcEid` (or the `srcEid` is unregistered).
+    error StuckFundsAlreadyExist(bytes32 guid);
     error UntrustedComposeSource(uint32 srcEid, bytes32 composeFrom);
-
-    /// @notice The payload's self-declared `sourceChainId` does not match the
-    ///         chain id registered for the message's transport `srcEid`.
     error SourceChainIdMismatch(uint32 srcEid, uint256 sourceChainId);
 
     // =========================================================================

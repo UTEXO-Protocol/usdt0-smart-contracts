@@ -256,6 +256,12 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             // unconsumed approval cannot accumulate across repeated failures.
             IERC20(token).forceApprove(bridge, 0);
 
+            // Never overwrite an existing parked record. LayerZero guids are
+            // unique per packet, so a second failed compose under the same
+            // `_guid` is not expected; if it ever happens, preserve the
+            // original (recoverable) record instead of clobbering it.
+            if (_stuckFunds[_guid].amountLD != 0) revert StuckFundsAlreadyExist(_guid);
+
             _stuckFunds[_guid] = StuckFunds({
                 amountLD:           amountLD,
                 nativeValue:        msg.value,
