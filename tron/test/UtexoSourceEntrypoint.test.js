@@ -692,6 +692,26 @@ contract('UtexoSourceEntrypoint', () => {
         'oft untouched on oversized settlementData'
       );
     });
+
+    /// DestinationAddress over the cap reverts before any token pull.
+    it('reverts on destinationAddress exceeding the cap', async () => {
+      const cap      = Number(await entrypoint.MAX_DESTINATION_ADDRESS_LENGTH().call());
+      const longAddr = 'a'.repeat(cap + 1);
+      const payloadLongAddr = encodePayload(DEST_CHAIN_ID, longAddr, OPERATION_ID);
+
+      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectRevert(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadLongAddr, ZERO_ADDR_HEX]
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
+
+      assert.equal(
+        (await token.balanceOf(oft.address).call()).toString(),
+        '0',
+        'oft untouched on oversized destinationAddress'
+      );
+    });
   });
 
   describe('deposit (refund recipient)', () => {
