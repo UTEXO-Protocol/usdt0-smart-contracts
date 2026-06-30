@@ -72,6 +72,15 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     ///         `UtexoSourceEntrypoint`.
     uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 1024;
 
+    /// @notice Upper bound on the inbound `destinationAddress` byte length.
+    ///         It is forwarded into `Bridge.fundsIn` (which itself caps at
+    ///         `MAX_ADDRESS_LENGTH = 512`), re-emitted in `ComposeFundsIn`, and
+    ///         written to `_stuckFunds[guid]` on the failure path. Bounding it
+    ///         here keeps the cap aligned with the Bridge and the source-chain
+    ///         `UtexoSourceEntrypoint`, and stops an oversized value from
+    ///         inflating event logs or stuck-funds storage.
+    uint256 public constant MAX_DESTINATION_ADDRESS_LENGTH = 512;
+
     // =========================================================================
     // Immutables
     // =========================================================================
@@ -232,10 +241,13 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             bytes memory settlementData
         ) = abi.decode(payload, (uint256, uint256, string, uint256, bytes));
 
-        // 3a. Bound the opaque `settlementData` before it is plumbed onward or,
-        //     on the failure path, written to `_stuckFunds[guid]` storage.
+        // 3a. Bound the decoded inputs before they are plumbed onward or, on the
+        //     failure path, written to `_stuckFunds[guid]` storage.
         if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
             revert SettlementDataTooLong(settlementData.length, MAX_SETTLEMENT_DATA_LENGTH);
+        }
+        if (bytes(destinationAddress).length > MAX_DESTINATION_ADDRESS_LENGTH) {
+            revert DestinationAddressTooLong(bytes(destinationAddress).length, MAX_DESTINATION_ADDRESS_LENGTH);
         }
 
         // 3b. Bind the self-declared `sourceChainId` to the transport origin: the
