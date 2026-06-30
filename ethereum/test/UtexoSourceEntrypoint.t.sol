@@ -397,6 +397,64 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(token.balanceOf(address(entrypoint)), 0, 'entrypoint did not pull');
     }
 
+    /// @dev Deposit rejects an oversized settlementData before pulling
+    ///      tokens or paying any LZ fee, so an oversized blob never enters the
+    ///      cross-chain composeMsg.
+    function test_deposit_revertsOnOversizedSettlementData() public {
+        uint256 cap = entrypoint.MAX_SETTLEMENT_DATA_LENGTH();
+        IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
+            amountLD:     10e6,
+            minAmountLD:  10e6,
+            extraOptions: hex'0003',
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(cap + 1))
+        });
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoSourceEntrypoint.SettlementDataTooLong.selector, cap + 1, cap
+        ));
+        entrypoint.deposit{ value: NATIVE_FEE }(p);
+        vm.stopPrank();
+
+        assertEq(token.balanceOf(address(oft)),        0, 'oft untouched');
+        assertEq(token.balanceOf(address(entrypoint)), 0, 'entrypoint did not pull');
+    }
+
+    /// @dev SettlementData exactly at the cap deposits fine.
+    function test_deposit_acceptsSettlementDataAtMaxBoundary() public {
+        IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
+            amountLD:     10e6,
+            minAmountLD:  10e6,
+            extraOptions: hex'0003',
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(entrypoint.MAX_SETTLEMENT_DATA_LENGTH()))
+        });
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        bytes32 guid = entrypoint.deposit{ value: NATIVE_FEE }(p);
+        vm.stopPrank();
+
+        assertEq(guid, keccak256(abi.encode('mock-guid', uint64(1))), 'deposit succeeds at cap boundary');
+    }
+
+    /// @dev Quote applies the same cap so it reverts on exactly the
+    ///      input the matching deposit would reject.
+    function test_quote_revertsOnOversizedSettlementData() public {
+        uint256 cap = entrypoint.MAX_SETTLEMENT_DATA_LENGTH();
+        IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
+            amountLD:     10e6,
+            minAmountLD:  10e6,
+            extraOptions: hex'0003',
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(cap + 1))
+        });
+
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoSourceEntrypoint.SettlementDataTooLong.selector, cap + 1, cap
+        ));
+        entrypoint.quote(p);
+    }
+
     // =========================================================================
     // Reverts
     // =========================================================================
