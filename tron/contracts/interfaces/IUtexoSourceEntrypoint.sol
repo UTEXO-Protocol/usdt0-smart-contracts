@@ -45,6 +45,7 @@ interface IUtexoSourceEntrypoint {
     error ZeroAmount();
     error InsufficientNativeFee(uint256 provided, uint256 required);
     error NativeRefundFailed();
+    error SettlementDataTooLong(uint256 length, uint256 maxLength);
 
     // =========================================================================
     // Events

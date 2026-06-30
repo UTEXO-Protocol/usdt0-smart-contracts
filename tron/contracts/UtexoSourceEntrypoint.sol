@@ -53,6 +53,19 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     error OwnershipRenunciationDisabled();
 
     // =========================================================================
+    // Constants
+    // =========================================================================
+
+    /// @notice Upper bound on the `settlementData` byte length, mirroring
+    ///         `UtexoLZAdapter.MAX_SETTLEMENT_DATA_LENGTH` on the destination
+    ///         chain. Capping it here keeps an honest deposit from ever encoding
+    ///         an oversized blob into the LayerZero `composeMsg`, which the
+    ///         destination adapter would then have to bound (or strand) on the
+    ///         failure path. 1024 bytes is ample for the empty
+    ///         `NullSettlementModule` blob used by LZ routes.
+    uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 1024;
+
+    // =========================================================================
     // Immutables
     // =========================================================================
 
@@ -131,6 +144,12 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             bytes memory settlementData
         ) = abi.decode(depositParams.payload, (uint256, string, uint256, bytes));
 
+        // Bound the opaque blob at the source so an oversized settlementData
+        // can never enter the cross-chain composeMsg.
+        if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
+            revert SettlementDataTooLong(settlementData.length, MAX_SETTLEMENT_DATA_LENGTH);
+        }
+
         bytes memory composeMsg = abi.encode(
             block.chainid,
             destinationChainId,
@@ -200,6 +219,12 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             uint256 operationId,
             bytes memory settlementData
         ) = abi.decode(depositParams.payload, (uint256, string, uint256, bytes));
+
+        // Same cap as `deposit` so the quote reverts on exactly the inputs the
+        // send would reject.
+        if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
+            revert SettlementDataTooLong(settlementData.length, MAX_SETTLEMENT_DATA_LENGTH);
+        }
 
         bytes memory composeMsg = abi.encode(
             block.chainid,
