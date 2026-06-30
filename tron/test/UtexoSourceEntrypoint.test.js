@@ -602,6 +602,25 @@ contract('UtexoSourceEntrypoint', () => {
       const oftCmd = await oft.lastOftCmd().call();
       assert.isTrue(oftCmd === '0x' || oftCmd === '0x0' || oftCmd === '', 'oftCmd empty');
     });
+
+    /// SettlementData exactly at the cap deposits fine and is
+    /// forwarded to the OFT.
+    it('accepts settlementData exactly at the cap', async () => {
+      const cap     = Number(await entrypoint.MAX_SETTLEMENT_DATA_LENGTH().call());
+      const atCap   = '0x' + '00'.repeat(cap);
+      const payloadAtCap = encodePayload(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, atCap);
+
+      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await entrypoint.deposit(
+        [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadAtCap]
+      ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
+
+      assert.equal(
+        (await token.balanceOf(oft.address).call()).toString(),
+        AMOUNT_LD,
+        'deposit at cap forwards to OFT'
+      );
+    });
   });
 
   // ===========================================================================
@@ -653,6 +672,26 @@ contract('UtexoSourceEntrypoint', () => {
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
     });
+
+    /// SettlementData over the cap reverts before any token pull.
+    it('reverts on settlementData exceeding the cap', async () => {
+      const cap     = Number(await entrypoint.MAX_SETTLEMENT_DATA_LENGTH().call());
+      const overCap = '0x' + '00'.repeat(cap + 1);
+      const payloadOver = encodePayload(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, overCap);
+
+      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectRevert(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadOver]
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
+
+      assert.equal(
+        (await token.balanceOf(oft.address).call()).toString(),
+        '0',
+        'oft untouched on oversized settlementData'
+      );
+    });
   });
 
   // ===========================================================================
@@ -669,6 +708,22 @@ contract('UtexoSourceEntrypoint', () => {
       ).call();
 
       assert.equal(quoted.toString(), String(FEE));
+    });
+
+    /// Quote applies the same cap, so it reverts on exactly the input
+    /// the matching deposit would reject.
+    it('reverts on settlementData exceeding the cap', async () => {
+      const cap     = Number(await entrypoint.MAX_SETTLEMENT_DATA_LENGTH().call());
+      const overCap = '0x' + '00'.repeat(cap + 1);
+      const payloadOver = encodePayload(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, overCap);
+
+      let threw = false;
+      try {
+        await entrypoint.quote([AMOUNT_LD, AMOUNT_LD, '0x0003', payloadOver]).call();
+      } catch (e) {
+        threw = true;
+      }
+      assert.isTrue(threw, 'quote reverts on oversized settlementData');
     });
   });
 });
