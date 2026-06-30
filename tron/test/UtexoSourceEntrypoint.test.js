@@ -450,7 +450,7 @@ contract('UtexoSourceEntrypoint', () => {
 
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
@@ -477,7 +477,7 @@ contract('UtexoSourceEntrypoint', () => {
       );
 
       const quoted = await entrypoint.quote(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX]
       ).call();
 
       assert.equal(quoted.toString(), String(NATIVE_FEE));
@@ -493,7 +493,7 @@ contract('UtexoSourceEntrypoint', () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
 
       await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX]
       ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
 
       // OFT received the tokens (proves allowance was set and pull happened).
@@ -535,7 +535,7 @@ contract('UtexoSourceEntrypoint', () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
 
       await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX]
       ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
 
       const composeMsg = await oft.lastComposeMsg().call();
@@ -567,7 +567,7 @@ contract('UtexoSourceEntrypoint', () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
 
       await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadWithBlob]
+        [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadWithBlob, ZERO_ADDR_HEX]
       ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
 
       const composeMsg = await oft.lastComposeMsg().call();
@@ -592,7 +592,7 @@ contract('UtexoSourceEntrypoint', () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
 
       await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, extra, payload]
+        [AMOUNT_LD, AMOUNT_LD, extra, payload, ZERO_ADDR_HEX]
       ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
 
       assert.equal(
@@ -612,7 +612,7 @@ contract('UtexoSourceEntrypoint', () => {
 
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
       await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadAtCap]
+        [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadAtCap, ZERO_ADDR_HEX]
       ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
 
       assert.equal(
@@ -631,7 +631,7 @@ contract('UtexoSourceEntrypoint', () => {
     it('reverts on zero amount', async () => {
       await sendExpectRevert(
         entrypoint.deposit(
-          ['0', '0', '0x0003', payload]
+          ['0', '0', '0x0003', payload, ZERO_ADDR_HEX]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
     });
@@ -640,7 +640,7 @@ contract('UtexoSourceEntrypoint', () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX]
         ).send({ callValue: NATIVE_FEE - 1, feeLimit: FEE_LIMIT })
       );
     });
@@ -649,7 +649,7 @@ contract('UtexoSourceEntrypoint', () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', '0x01020304']
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', '0x01020304', ZERO_ADDR_HEX]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
     });
@@ -658,7 +658,7 @@ contract('UtexoSourceEntrypoint', () => {
       // Deliberately skip `token.approve`.
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
     });
@@ -668,7 +668,7 @@ contract('UtexoSourceEntrypoint', () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
     });
@@ -682,7 +682,7 @@ contract('UtexoSourceEntrypoint', () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadOver]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadOver, ZERO_ADDR_HEX]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
@@ -691,6 +691,29 @@ contract('UtexoSourceEntrypoint', () => {
         '0',
         'oft untouched on oversized settlementData'
       );
+    });
+  });
+
+  describe('deposit (refund recipient)', () => {
+    it('refunds the native surplus to the explicit refundTo', async () => {
+      // Use an already-activated account as the refund target so the refund is
+      // a plain credit (no account-creation cost) and the balance delta equals
+      // the surplus exactly. The deposit is sent by the default deployer, so
+      // refundTo is distinct from msg.sender.
+      const refundTo = pendingOwnerAccount.address.base58;
+      const surplus  = 54_321; // sun
+
+      const before = Number(await tronWeb.trx.getBalance(refundTo));
+
+      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendAndConfirm(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, refundTo]
+        ).send({ callValue: NATIVE_FEE + surplus, feeLimit: FEE_LIMIT })
+      );
+
+      const after = Number(await tronWeb.trx.getBalance(refundTo));
+      assert.equal(after - before, surplus, 'surplus refunded to explicit refundTo');
     });
   });
 
@@ -704,7 +727,7 @@ contract('UtexoSourceEntrypoint', () => {
       await oft.setNativeFee(FEE).send({ feeLimit: FEE_LIMIT });
 
       const quoted = await entrypoint.quote(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX]
       ).call();
 
       assert.equal(quoted.toString(), String(FEE));
@@ -719,7 +742,7 @@ contract('UtexoSourceEntrypoint', () => {
 
       let threw = false;
       try {
-        await entrypoint.quote([AMOUNT_LD, AMOUNT_LD, '0x0003', payloadOver]).call();
+        await entrypoint.quote([AMOUNT_LD, AMOUNT_LD, '0x0003', payloadOver, ZERO_ADDR_HEX]).call();
       } catch (e) {
         threw = true;
       }
