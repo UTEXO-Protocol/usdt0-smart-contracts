@@ -27,11 +27,14 @@ interface IUtexoSourceEntrypoint {
     ///                     input reverts here, before any LZ fee is paid) and
     ///                     re-encodes it with `block.chainid` prepended as the
     ///                     actual `composeMsg` forwarded to LayerZero.
+    /// @param refundTo Address that receives the LayerZero native-fee
+    ///                     surplus (and is passed as the OFT `refundAddress`).
     struct DepositParams {
         uint256 amountLD;
         uint256 minAmountLD;
         bytes   extraOptions;
         bytes   payload;
+        address refundTo;
     }
 
     // =========================================================================

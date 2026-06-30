@@ -178,17 +178,24 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             revert InsufficientNativeFee({ provided: msg.value, required: fee.nativeFee });
         }
 
-        // 5. Forward exactly `fee.nativeFee` to the OFT; refund surplus ourselves.
-        //    Using `msg.sender` as `refundAddress` is defensive only: with this call
-        //    shape the OFT has no surplus to refund.
+        // 5. Resolve the native-refund target. A contract caller that cannot
+        //    receive native would otherwise have its deposit bricked on the
+        //    surplus refund, so the caller may name an explicit recipient.
+        address refundTo = depositParams.refundTo == address(0)
+            ? msg.sender
+            : depositParams.refundTo;
+
+        // 6. Forward exactly `fee.nativeFee` to the OFT; refund surplus ourselves.
+        //    `refundTo` is passed as the OFT `refundAddress` too, though with this
+        //    call shape the OFT has no surplus to refund.
         (MessagingReceipt memory receipt, ) =
-            IOFT(oft).send{ value: fee.nativeFee }(sp, fee, msg.sender);
+            IOFT(oft).send{ value: fee.nativeFee }(sp, fee, refundTo);
         guid = receipt.guid;
 
-        // 6. Refund the user's native surplus (msg.value - nativeFee).
+        // 7. Refund the native surplus (msg.value - nativeFee) to `refundTo`.
         uint256 excess = msg.value - fee.nativeFee;
         if (excess != 0) {
-            (bool ok, ) = msg.sender.call{ value: excess }('');
+            (bool ok, ) = refundTo.call{ value: excess }('');
             if (!ok) revert NativeRefundFailed();
         }
 
