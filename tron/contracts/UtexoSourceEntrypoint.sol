@@ -65,6 +65,14 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     ///         `NullSettlementModule` blob used by LZ routes.
     uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 1024;
 
+    /// @notice Upper bound on the `destinationAddress` byte length, mirroring
+    ///         `UtexoLZAdapter.MAX_DESTINATION_ADDRESS_LENGTH` and the Bridge's
+    ///         `MAX_ADDRESS_LENGTH`. Capping it here keeps an honest deposit from
+    ///         encoding an oversized address into the LayerZero `composeMsg` that
+    ///         the destination would only reject (after fees are paid on two
+    ///         chains). 512 bytes covers every supported destination format.
+    uint256 public constant MAX_DESTINATION_ADDRESS_LENGTH = 512;
+
     // =========================================================================
     // Immutables
     // =========================================================================
@@ -144,10 +152,13 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             bytes memory settlementData
         ) = abi.decode(depositParams.payload, (uint256, string, uint256, bytes));
 
-        // Bound the opaque blob at the source so an oversized settlementData
-        // can never enter the cross-chain composeMsg.
+        // Bound the decoded inputs at the source so oversized values can never
+        // enter the cross-chain composeMsg.
         if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
             revert SettlementDataTooLong(settlementData.length, MAX_SETTLEMENT_DATA_LENGTH);
+        }
+        if (bytes(destinationAddress).length > MAX_DESTINATION_ADDRESS_LENGTH) {
+            revert DestinationAddressTooLong(bytes(destinationAddress).length, MAX_DESTINATION_ADDRESS_LENGTH);
         }
 
         bytes memory composeMsg = abi.encode(
@@ -227,10 +238,13 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             bytes memory settlementData
         ) = abi.decode(depositParams.payload, (uint256, string, uint256, bytes));
 
-        // Same cap as `deposit` so the quote reverts on exactly the inputs the
+        // Same caps as `deposit` so the quote reverts on exactly the inputs the
         // send would reject.
         if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
             revert SettlementDataTooLong(settlementData.length, MAX_SETTLEMENT_DATA_LENGTH);
+        }
+        if (bytes(destinationAddress).length > MAX_DESTINATION_ADDRESS_LENGTH) {
+            revert DestinationAddressTooLong(bytes(destinationAddress).length, MAX_DESTINATION_ADDRESS_LENGTH);
         }
 
         bytes memory composeMsg = abi.encode(
