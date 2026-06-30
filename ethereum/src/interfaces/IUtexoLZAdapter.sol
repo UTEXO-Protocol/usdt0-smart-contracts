@@ -66,6 +66,7 @@ interface IUtexoLZAdapter {
     error StuckFundsAlreadyExist(bytes32 guid);
     error UntrustedComposeSource(uint32 srcEid, bytes32 composeFrom);
     error SourceChainIdMismatch(uint32 srcEid, uint256 sourceChainId);
+    error SettlementDataTooLong(uint256 length, uint256 maxLength);
 
     // =========================================================================
     // Events

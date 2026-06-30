@@ -58,6 +58,21 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // =========================================================================
+    // Constants
+    // =========================================================================
+
+    /// @notice Upper bound on the inbound `settlementData` byte length.
+    ///         `settlementData` is plumbed through to the destination route's
+    ///         `SettlementModule.onFundsIn` and, on the failure path, written to
+    ///         `_stuckFunds[guid]` storage. An unbounded blob
+    ///         from a buggy/compromised entrypoint could make the catch-branch
+    ///         storage write exhaust the LayerZero Executor gas budget. LZ-adapter
+    ///         routes use `NullSettlementModule` (empty blob), so 1024 bytes is
+    ///         ample headroom. The same cap is mirrored on the source-chain
+    ///         `UtexoSourceEntrypoint`.
+    uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 1024;
+
+    // =========================================================================
     // Immutables
     // =========================================================================
 
@@ -217,7 +232,13 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             bytes memory settlementData
         ) = abi.decode(payload, (uint256, uint256, string, uint256, bytes));
 
-        // 3a. Bind the self-declared `sourceChainId` to the transport origin: the
+        // 3a. Bound the opaque `settlementData` before it is plumbed onward or,
+        //     on the failure path, written to `_stuckFunds[guid]` storage.
+        if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
+            revert SettlementDataTooLong(settlementData.length, MAX_SETTLEMENT_DATA_LENGTH);
+        }
+
+        // 3b. Bind the self-declared `sourceChainId` to the transport origin: the
         //     trusted entrypoint for this `srcEid` may only speak for the chain id
         //     registered to it. This turns `sourceChainId` — which drives route
         //     and commission selection downstream — from a self-asserted field
