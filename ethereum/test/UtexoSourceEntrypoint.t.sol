@@ -326,7 +326,8 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     42e6,
             minAmountLD:  42e6,
             extraOptions: extra,
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA)
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA),
+            refundTo: address(0)
         });
 
         vm.startPrank(user);
@@ -350,7 +351,8 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     7e6,
             minAmountLD:  7e6,
             extraOptions: hex'0003',
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, blob)
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, blob),
+            refundTo: address(0)
         });
 
         vm.startPrank(user);
@@ -381,7 +383,8 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     10e6,
             minAmountLD:  10e6,
             extraOptions: hex'0003',
-            payload:      hex'01020304' // 4 bytes — too short to decode four dynamic fields
+            payload:      hex'01020304', // 4 bytes — too short to decode four dynamic fields
+            refundTo: address(0)
         });
 
         vm.startPrank(user);
@@ -406,7 +409,8 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     10e6,
             minAmountLD:  10e6,
             extraOptions: hex'0003',
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(cap + 1))
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(cap + 1)),
+            refundTo: address(0)
         });
 
         vm.startPrank(user);
@@ -427,7 +431,8 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     10e6,
             minAmountLD:  10e6,
             extraOptions: hex'0003',
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(entrypoint.MAX_SETTLEMENT_DATA_LENGTH()))
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(entrypoint.MAX_SETTLEMENT_DATA_LENGTH())),
+            refundTo: address(0)
         });
 
         vm.startPrank(user);
@@ -446,7 +451,8 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     10e6,
             minAmountLD:  10e6,
             extraOptions: hex'0003',
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(cap + 1))
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(cap + 1)),
+            refundTo: address(0)
         });
 
         vm.expectRevert(abi.encodeWithSelector(
@@ -525,6 +531,62 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(token.balanceOf(address(oft)), p.amountLD, 'tokens forwarded');
     }
 
+    /// @dev Surplus is refunded to the explicit `refundTo`, not to the caller.
+    ///      Frontends pass the connected user's wallet here.
+    function test_deposit_surplusRefundedToExplicitRefundTo() public {
+        address refundDest = makeAddr('refundDest');
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(250e6);
+        p.refundTo = refundDest;
+        uint256 surplus = 0.05 ether;
+
+        uint256 destBalBefore = refundDest.balance;
+        uint256 userBalBefore = user.balance;
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        entrypoint.deposit{ value: NATIVE_FEE + surplus }(p);
+        vm.stopPrank();
+
+        assertEq(refundDest.balance,           destBalBefore + surplus,          'surplus to explicit refundTo');
+        assertEq(user.balance,                 userBalBefore - NATIVE_FEE - surplus, 'caller charged full value');
+        assertEq(address(entrypoint).balance,  0,                                'no native residue');
+    }
+
+    /// @dev A contract caller that cannot receive native is NOT
+    ///      bricked when it names a native-capable `refundTo` — surplus goes
+    ///      there and the deposit completes.
+    function test_deposit_contractCallerNotBrickedWithExplicitRefundTo() public {
+        RejectingRecipient rec = new RejectingRecipient(entrypoint, token);
+        token.mint(address(rec), 100e6);
+        vm.deal(address(rec), 1 ether);
+
+        address refundDest = makeAddr('refundDest');
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
+        p.refundTo = refundDest;
+
+        uint256 destBalBefore = refundDest.balance;
+        rec.go{ value: NATIVE_FEE + 1 }(p);
+
+        assertEq(refundDest.balance,            destBalBefore + 1, 'surplus to refundTo, deposit not bricked');
+        assertEq(token.balanceOf(address(oft)), p.amountLD,        'tokens forwarded');
+    }
+
+    /// @dev Pointing `refundTo` at a contract that rejects native still reverts —
+    ///      the parameter consciously controls the target, so a bad choice is the
+    ///      integrator's responsibility rather than a silent default brick.
+    function test_deposit_explicitRefundToRejectingNative_reverts() public {
+        RejectingRecipient bad = new RejectingRecipient(entrypoint, token);
+
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
+        p.refundTo = address(bad);
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        vm.expectRevert(IUtexoSourceEntrypoint.NativeRefundFailed.selector);
+        entrypoint.deposit{ value: NATIVE_FEE + 1 }(p);
+        vm.stopPrank();
+    }
+
     // =========================================================================
     // Quote
     // =========================================================================
@@ -548,7 +610,8 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     amount,
             minAmountLD:  amount,
             extraOptions: hex'0003',                 // arbitrary non-empty
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA)
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA),
+            refundTo: address(0)
         });
     }
 }
