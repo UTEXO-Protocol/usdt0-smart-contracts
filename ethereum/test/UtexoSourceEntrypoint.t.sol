@@ -289,7 +289,7 @@ contract UtexoSourceEntrypointTest is Test {
 
         // Entrypoint rewrote `composeMsg` with `block.chainid` prepended.
         bytes memory expectedComposeMsg = abi.encode(
-            block.chainid, DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA
+            block.chainid, DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA, uint256(0)
         );
         assertEq(oft.lastComposeMsg(), expectedComposeMsg, 'composeMsg = chainid + business');
 
@@ -327,7 +327,8 @@ contract UtexoSourceEntrypointTest is Test {
             minAmountLD:  42e6,
             extraOptions: extra,
             payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA),
-            refundTo: address(0)
+            refundTo: address(0),
+            expectedComposeValue: 0
         });
 
         vm.startPrank(user);
@@ -352,7 +353,8 @@ contract UtexoSourceEntrypointTest is Test {
             minAmountLD:  7e6,
             extraOptions: hex'0003',
             payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, blob),
-            refundTo: address(0)
+            refundTo: address(0),
+            expectedComposeValue: 0
         });
 
         vm.startPrank(user);
@@ -369,9 +371,33 @@ contract UtexoSourceEntrypointTest is Test {
         vm.stopPrank();
 
         bytes memory expectedComposeMsg = abi.encode(
-            block.chainid, DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, blob
+            block.chainid, DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, blob, uint256(0)
         );
         assertEq(oft.lastComposeMsg(), expectedComposeMsg, 'composeMsg carries settlementData');
+    }
+
+    /// @dev Deposit binds `expectedComposeValue` into `composeMsg` so the
+    ///      destination adapter can enforce the funded native value.
+    function test_deposit_bindsExpectedComposeValueIntoComposeMsg() public {
+        uint256 ecv = 0.02 ether;
+        IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
+            amountLD:     7e6,
+            minAmountLD:  7e6,
+            extraOptions: hex'0003',
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA),
+            refundTo:     address(0),
+            expectedComposeValue: ecv
+        });
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        entrypoint.deposit{ value: NATIVE_FEE }(p);
+        vm.stopPrank();
+
+        bytes memory expectedComposeMsg = abi.encode(
+            block.chainid, DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA, ecv
+        );
+        assertEq(oft.lastComposeMsg(), expectedComposeMsg, 'composeMsg carries expectedComposeValue');
     }
 
     /// @dev A malformed `payload` (cannot decode as (uint256, string, uint256, bytes))
@@ -384,13 +410,14 @@ contract UtexoSourceEntrypointTest is Test {
             minAmountLD:  10e6,
             extraOptions: hex'0003',
             payload:      hex'01020304', // 4 bytes — too short to decode four dynamic fields
-            refundTo: address(0)
+            refundTo: address(0),
+            expectedComposeValue: 0
         });
 
         vm.startPrank(user);
         token.approve(address(entrypoint), p.amountLD);
 
-        // Solidity's abi.decode reverts with no data on insufficient input.
+        // Abi.decode reverts with no data on insufficient input.
         vm.expectRevert();
         entrypoint.deposit{ value: NATIVE_FEE }(p);
         vm.stopPrank();
@@ -410,7 +437,8 @@ contract UtexoSourceEntrypointTest is Test {
             minAmountLD:  10e6,
             extraOptions: hex'0003',
             payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(cap + 1)),
-            refundTo: address(0)
+            refundTo: address(0),
+            expectedComposeValue: 0
         });
 
         vm.startPrank(user);
@@ -432,7 +460,8 @@ contract UtexoSourceEntrypointTest is Test {
             minAmountLD:  10e6,
             extraOptions: hex'0003',
             payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(entrypoint.MAX_SETTLEMENT_DATA_LENGTH())),
-            refundTo: address(0)
+            refundTo: address(0),
+            expectedComposeValue: 0
         });
 
         vm.startPrank(user);
@@ -452,7 +481,8 @@ contract UtexoSourceEntrypointTest is Test {
             minAmountLD:  10e6,
             extraOptions: hex'0003',
             payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(cap + 1)),
-            refundTo: address(0)
+            refundTo: address(0),
+            expectedComposeValue: 0
         });
 
         vm.expectRevert(abi.encodeWithSelector(
@@ -470,7 +500,8 @@ contract UtexoSourceEntrypointTest is Test {
             minAmountLD:  10e6,
             extraOptions: hex'0003',
             payload:      abi.encode(DEST_CHAIN_ID, string(new bytes(cap + 1)), OPERATION_ID, EMPTY_SETTLEMENT_DATA),
-            refundTo:     address(0)
+            refundTo:     address(0),
+            expectedComposeValue: 0
         });
 
         vm.startPrank(user);
@@ -492,7 +523,8 @@ contract UtexoSourceEntrypointTest is Test {
             minAmountLD:  10e6,
             extraOptions: hex'0003',
             payload:      abi.encode(DEST_CHAIN_ID, string(new bytes(entrypoint.MAX_DESTINATION_ADDRESS_LENGTH())), OPERATION_ID, EMPTY_SETTLEMENT_DATA),
-            refundTo:     address(0)
+            refundTo:     address(0),
+            expectedComposeValue: 0
         });
 
         vm.startPrank(user);
@@ -511,7 +543,8 @@ contract UtexoSourceEntrypointTest is Test {
             minAmountLD:  10e6,
             extraOptions: hex'0003',
             payload:      abi.encode(DEST_CHAIN_ID, string(new bytes(cap + 1)), OPERATION_ID, EMPTY_SETTLEMENT_DATA),
-            refundTo:     address(0)
+            refundTo:     address(0),
+            expectedComposeValue: 0
         });
 
         vm.expectRevert(abi.encodeWithSelector(
@@ -670,7 +703,8 @@ contract UtexoSourceEntrypointTest is Test {
             minAmountLD:  amount,
             extraOptions: hex'0003',                 // arbitrary non-empty
             payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA),
-            refundTo: address(0)
+            refundTo: address(0),
+            expectedComposeValue: 0
         });
     }
 }

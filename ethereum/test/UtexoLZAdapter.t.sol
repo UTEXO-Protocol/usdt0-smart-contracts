@@ -162,7 +162,7 @@ contract UtexoLZAdapterTest is Test {
             SRC_EID,
             amount,
             TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId, EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId, EMPTY_SETTLEMENT_DATA, 0.005 ether)
         );
 
         bytes32 guid = keccak256('inbound-guid');
@@ -205,7 +205,7 @@ contract UtexoLZAdapterTest is Test {
             SRC_EID,
             amount,
             TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, string('rgb'), string('addr'), uint256(1), EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, string('rgb'), string('addr'), uint256(1), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         vm.prank(endpoint);
@@ -235,7 +235,7 @@ contract UtexoLZAdapterTest is Test {
             SRC_EID,
             amount,
             TRUSTED_ENTRYPOINT_B32,
-            abi.encode(customChainId, RGB_CHAIN_ID, string('b'), uint256(0), EMPTY_SETTLEMENT_DATA)
+            abi.encode(customChainId, RGB_CHAIN_ID, string('b'), uint256(0), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         vm.expectEmit(true, false, false, true, address(adapter));
@@ -260,7 +260,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(11), data)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(11), data, uint256(0))
         );
 
         bytes32 guid = bytes32('rt-guid');
@@ -286,7 +286,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(2), data)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(2), data, uint256(0))
         );
 
         bytes32 guid = bytes32('rt-stuck');
@@ -305,7 +305,7 @@ contract UtexoLZAdapterTest is Test {
     function test_lzCompose_revertsIfNotEndpoint() public {
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, 1e6, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('b'), uint256(0), EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('b'), uint256(0), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         vm.prank(makeAddr('attacker'));
@@ -316,7 +316,7 @@ contract UtexoLZAdapterTest is Test {
     function test_lzCompose_revertsIfFromIsNotOft() public {
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, 1e6, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('b'), uint256(0), EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('b'), uint256(0), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         vm.prank(endpoint);
@@ -341,7 +341,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId, EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId, EMPTY_SETTLEMENT_DATA, nativeValue)
         );
 
         bytes32 guid = bytes32('stuck-guid');
@@ -386,7 +386,7 @@ contract UtexoLZAdapterTest is Test {
         bytes32 guid = bytes32('happy-guid');
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(7), EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(7), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         vm.prank(endpoint);
@@ -412,7 +412,7 @@ contract UtexoLZAdapterTest is Test {
         token.mint(address(adapter), amount1);
         bytes memory message1 = _encodeCompose(
             uint64(1), SRC_EID, amount1, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('first'), uint256(1), EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('first'), uint256(1), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
         vm.prank(endpoint);
         adapter.lzCompose(address(oft), guid, message1, address(0), '');
@@ -427,7 +427,7 @@ contract UtexoLZAdapterTest is Test {
         token.mint(address(adapter), amount2);
         bytes memory message2 = _encodeCompose(
             uint64(2), SRC_EID, amount2, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('second'), uint256(2), EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('second'), uint256(2), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
         vm.prank(endpoint);
         vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.StuckFundsAlreadyExist.selector, guid));
@@ -451,7 +451,7 @@ contract UtexoLZAdapterTest is Test {
         bytes memory tooBig = new bytes(cap + 1);
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(1), tooBig)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(1), tooBig, uint256(0))
         );
 
         vm.prank(endpoint);
@@ -470,7 +470,7 @@ contract UtexoLZAdapterTest is Test {
         bytes memory atMax = new bytes(adapter.MAX_SETTLEMENT_DATA_LENGTH());
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(1), atMax)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(1), atMax, uint256(0))
         );
 
         vm.prank(endpoint);
@@ -490,7 +490,7 @@ contract UtexoLZAdapterTest is Test {
         string memory tooLong = string(new bytes(cap + 1));
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, tooLong, uint256(1), EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, tooLong, uint256(1), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         vm.prank(endpoint);
@@ -508,7 +508,7 @@ contract UtexoLZAdapterTest is Test {
         string memory atMax = string(new bytes(adapter.MAX_DESTINATION_ADDRESS_LENGTH()));
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, atMax, uint256(1), EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, atMax, uint256(1), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         vm.prank(endpoint);
@@ -516,6 +516,55 @@ contract UtexoLZAdapterTest is Test {
 
         assertEq(token.balanceOf(address(bridge)), amount, 'forwarded to bridge at cap boundary');
         assertEq(adapter.getStuckFunds(bytes32('ok-addr-guid')).amountLD, 0, 'no stuck record at boundary');
+    }
+
+    /// @dev A compose executed with `msg.value` != the bound
+    ///      `expectedComposeValue` (griefing) reverts — the deposit is NOT
+    ///      parked, so LayerZero can retry with the funded value.
+    function test_lzCompose_revertsOnComposeValueMismatch() public {
+        uint256 amount   = 1e6;
+        uint256 expected = 0.01 ether; // what the depositor funded as the drop
+        token.mint(address(adapter), amount);
+
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(1), EMPTY_SETTLEMENT_DATA, expected)
+        );
+
+        vm.prank(endpoint);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.ComposeValueMismatch.selector, uint256(0.005 ether), expected
+        ));
+        adapter.lzCompose{ value: 0.005 ether }(address(oft), bytes32('grief'), message, address(0), '');
+
+        // Nothing parked; tokens untouched — the compose is retryable.
+        assertEq(adapter.getStuckFunds(bytes32('grief')).amountLD, 0, 'no stuck record');
+        assertEq(token.balanceOf(address(bridge)), 0, 'bridge untouched');
+    }
+
+    /// @dev An honestly-funded compose (`msg.value == expectedComposeValue`)
+    ///      that the Bridge then rejects (e.g. oracle drift moved the native
+    ///      commission) lands in `_stuckFunds` — recoverable, not reverted
+    ///      without a record. This is the case a bare `< commission` guard
+    ///      would wrongly drop.
+    function test_lzCompose_honestlyFundedButBridgeReverts_parksRecoverable() public {
+        bridge.setReverts(true);
+
+        uint256 amount   = 1e6;
+        uint256 expected = 0.01 ether;
+        token.mint(address(adapter), amount);
+
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(9), EMPTY_SETTLEMENT_DATA, expected)
+        );
+
+        vm.prank(endpoint);
+        adapter.lzCompose{ value: expected }(address(oft), bytes32('honest-park'), message, address(0), '');
+
+        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(bytes32('honest-park'));
+        assertEq(rec.amountLD,    amount,   'honest deposit parked (recoverable)');
+        assertEq(rec.nativeValue, expected, 'parked native value');
     }
 
     // =========================================================================
@@ -899,7 +948,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, attackerB32,
-            abi.encode(SOURCE_CHAIN_ID, string('rgb'), string('a'), uint256(0), EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, string('rgb'), string('a'), uint256(0), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         vm.prank(endpoint);
@@ -924,7 +973,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, 1e6, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('b'), uint256(0), EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('b'), uint256(0), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         vm.prank(endpoint);
@@ -954,7 +1003,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(wrongChainId, RGB_CHAIN_ID, string('addr'), uint256(7), EMPTY_SETTLEMENT_DATA)
+            abi.encode(wrongChainId, RGB_CHAIN_ID, string('addr'), uint256(7), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         vm.prank(endpoint);
@@ -983,7 +1032,7 @@ contract UtexoLZAdapterTest is Test {
         // srcEid here is `otherEid`, for which nothing is registered.
         bytes memory message = _encodeCompose(
             uint64(1), otherEid, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(7), EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(7), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         vm.prank(endpoint);
@@ -1006,7 +1055,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(7), EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, string('addr'), uint256(7), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         vm.prank(endpoint);
@@ -1033,7 +1082,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, creditedAmount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId, EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId, EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
         bytes32 guid = bytes32('credited-guid');
@@ -1085,7 +1134,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes memory message = _encodeCompose(
             uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId, settlementData)
+            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId, settlementData, nativeValue)
         );
 
         vm.expectEmit(true, false, false, true, address(adapter));
@@ -1140,7 +1189,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes memory message = _encodeCompose(
             uint64(0), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
-            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId, EMPTY_SETTLEMENT_DATA)
+            abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId, EMPTY_SETTLEMENT_DATA, nativeValue)
         );
 
         vm.prank(endpoint);
