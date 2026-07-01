@@ -29,12 +29,22 @@ interface IUtexoSourceEntrypoint {
     ///                     actual `composeMsg` forwarded to LayerZero.
     /// @param refundTo Address that receives the LayerZero native-fee
     ///                     surplus (and is passed as the OFT `refundAddress`).
+    /// @param expectedComposeValue The native value the backend budgeted as the
+    ///                     destination `lzCompose` drop (the same amount encoded
+    ///                     into `extraOptions`). It is bound into `composeMsg` so
+    ///                     `UtexoLZAdapter.lzCompose` can reject any execution
+    ///                     whose forwarded `msg.value` differs (griefing), while
+    ///                     letting an honestly-funded compose that the Bridge
+    ///                     later rejects (oracle drift) fall through to a
+    ///                     recoverable `_stuckFunds` record. MUST equal the
+    ///                     `lzCompose` native drop set in `extraOptions`.
     struct DepositParams {
         uint256 amountLD;
         uint256 minAmountLD;
         bytes   extraOptions;
         bytes   payload;
         address refundTo;
+        uint256 expectedComposeValue;
     }
 
     // =========================================================================

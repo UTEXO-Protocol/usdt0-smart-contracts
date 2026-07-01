@@ -68,6 +68,7 @@ interface IUtexoLZAdapter {
     error SourceChainIdMismatch(uint32 srcEid, uint256 sourceChainId);
     error SettlementDataTooLong(uint256 length, uint256 maxLength);
     error DestinationAddressTooLong(uint256 length, uint256 maxLength);
+    error ComposeValueMismatch(uint256 provided, uint256 expected);
 
     // =========================================================================
     // Events

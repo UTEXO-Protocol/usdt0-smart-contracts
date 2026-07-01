@@ -238,8 +238,9 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             uint256 destinationChainId,
             string memory destinationAddress,
             uint256 operationId,
-            bytes memory settlementData
-        ) = abi.decode(payload, (uint256, uint256, string, uint256, bytes));
+            bytes memory settlementData,
+            uint256 expectedComposeValue
+        ) = abi.decode(payload, (uint256, uint256, string, uint256, bytes, uint256));
 
         // 3a. Bound the decoded inputs before they are plumbed onward or, on the
         //     failure path, written to `_stuckFunds[guid]` storage.
@@ -257,6 +258,17 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         //     into one corroborated by the LayerZero transport.
         if (eidToChainId[srcEid_] != sourceChainId) {
             revert SourceChainIdMismatch(srcEid_, sourceChainId);
+        }
+
+        // 3c. Anti-grief: the forwarded native value must match the drop the
+        //     depositor budgeted (bound in `composeMsg` at deposit). A compose
+        //     executed with a wrong `msg.value` reverts here — LayerZero can
+        //     retry with the funded value instead of the deposit being parked.
+        //     An honestly-funded compose proceeds; if the Bridge later rejects it
+        //     (e.g. oracle drift moved the native commission), it lands in
+        //     `_stuckFunds` (recoverable), not lost.
+        if (msg.value != expectedComposeValue) {
+            revert ComposeValueMismatch(msg.value, expectedComposeValue);
         }
 
         // 4. Approve Bridge to pull the USDT0 we just received via lzReceive.
