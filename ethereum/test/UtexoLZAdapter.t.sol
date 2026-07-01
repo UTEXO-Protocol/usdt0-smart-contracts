@@ -567,6 +567,67 @@ contract UtexoLZAdapterTest is Test {
         assertEq(rec.nativeValue, expected, 'parked native value');
     }
 
+    /// @dev A compose whose business payload cannot be decoded must NOT
+    ///      revert (that would strand the OFT-credited USDT0 with no record).
+    ///      Instead it parks a minimal recoverable record (amountLD + forwarded
+    ///      native); the business fields are unknown, so they stay at defaults.
+    function test_lzCompose_malformedPayload_parksRecoverableRecord() public {
+        uint256 amount      = 3e6;
+        uint256 nativeValue = 0.004 ether;
+        token.mint(address(adapter), amount);
+
+        // Truncated business payload: cannot decode as the 6-field tuple.
+        bytes memory badPayload = abi.encode(uint256(0xdeadbeef));
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32, badPayload
+        );
+
+        bytes32 guid = bytes32('malformed-guid');
+
+        vm.expectEmit(true, false, false, true, address(adapter));
+        emit ComposeFundsInFailed(
+            guid, 0, amount, nativeValue, 0, '', 0, '', bytes('malformed compose payload')
+        );
+
+        // Does NOT revert — the malformed compose is parked, not stranded.
+        vm.prank(endpoint);
+        adapter.lzCompose{ value: nativeValue }(address(oft), guid, message, address(0), '');
+
+        // Minimal recoverable record: only amountLD + nativeValue are known.
+        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
+        assertEq(rec.amountLD,           amount,      'parked amountLD');
+        assertEq(rec.nativeValue,        nativeValue, 'parked nativeValue');
+        assertEq(rec.operationId,        0,           'opId default');
+        assertEq(rec.sourceChainId,      0,           'sourceChainId default');
+        assertEq(rec.destinationChainId, 0,           'destChainId default');
+        assertEq(rec.destinationAddress, '',          'destAddr default');
+        assertEq(rec.settlementData,     '',          'settlementData default');
+
+        // Funds stayed on the adapter (not forwarded to the Bridge), recoverable
+        // via refundStuckFunds.
+        assertEq(token.balanceOf(address(adapter)), amount, 'adapter still holds tokens');
+        assertEq(token.balanceOf(address(bridge)),  0,      'bridge untouched');
+    }
+
+    /// @dev The unique-guid guard also covers the malformed-park path —
+    ///      a second malformed compose for the same guid reverts rather than
+    ///      overwriting the first parked record.
+    function test_lzCompose_malformedPayload_guidGuardRevertsOnSecond() public {
+        token.mint(address(adapter), 5e6);
+        bytes memory badPayload = abi.encode(uint256(1));
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, 2e6, TRUSTED_ENTRYPOINT_B32, badPayload
+        );
+        bytes32 guid = bytes32('dup-malformed');
+
+        vm.prank(endpoint);
+        adapter.lzCompose(address(oft), guid, message, address(0), '');
+
+        vm.prank(endpoint);
+        vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.StuckFundsAlreadyExist.selector, guid));
+        adapter.lzCompose(address(oft), guid, message, address(0), '');
+    }
+
     // =========================================================================
     // sendOut — outbound (FundsOut) happy paths
     // =========================================================================
