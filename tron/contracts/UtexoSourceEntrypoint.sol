@@ -166,7 +166,8 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             destinationChainId,
             destinationAddress,
             operationId,
-            settlementData
+            settlementData,
+            depositParams.expectedComposeValue
         );
 
         // 3. Build the LayerZero send parameters. `dstEid` and `to` are immutable
@@ -252,7 +253,8 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             destinationChainId,
             destinationAddress,
             operationId,
-            settlementData
+            settlementData,
+            depositParams.expectedComposeValue
         );
         SendParam memory sp = SendParam({
             dstEid:       dstEid,
