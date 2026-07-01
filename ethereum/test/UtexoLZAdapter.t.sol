@@ -24,7 +24,7 @@ contract UtexoLZAdapterTest is Test {
         uint256 amountLD,
         uint256 destinationChainId,
         string  destinationAddress,
-        uint256 operationId,
+        uint256 indexed operationId,
         bytes   settlementData
     );
 
@@ -42,7 +42,7 @@ contract UtexoLZAdapterTest is Test {
         uint256 nativeValue,
         uint256 destinationChainId,
         string  destinationAddress,
-        uint256 operationId,
+        uint256 indexed operationId,
         bytes   settlementData,
         bytes   reason
     );
@@ -167,7 +167,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes32 guid = keccak256('inbound-guid');
 
-        vm.expectEmit(true, false, false, true, address(adapter));
+        vm.expectEmit(true, true, false, true, address(adapter));
         emit ComposeFundsIn(guid, SOURCE_CHAIN_ID, amount, destChainId, destAddr, opId, EMPTY_SETTLEMENT_DATA);
 
         vm.prank(endpoint);
@@ -238,7 +238,7 @@ contract UtexoLZAdapterTest is Test {
             abi.encode(customChainId, RGB_CHAIN_ID, string('b'), uint256(0), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
-        vm.expectEmit(true, false, false, true, address(adapter));
+        vm.expectEmit(true, true, false, true, address(adapter));
         emit ComposeFundsIn(bytes32('g'), customChainId, amount, RGB_CHAIN_ID, 'b', 0, EMPTY_SETTLEMENT_DATA);
 
         vm.prank(endpoint);
@@ -265,7 +265,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes32 guid = bytes32('rt-guid');
 
-        vm.expectEmit(true, false, false, true, address(adapter));
+        vm.expectEmit(true, true, false, true, address(adapter));
         emit ComposeFundsIn(guid, SOURCE_CHAIN_ID, amount, RGB_CHAIN_ID, 'addr', 11, data);
 
         vm.prank(endpoint);
@@ -349,7 +349,7 @@ contract UtexoLZAdapterTest is Test {
         // Reason data is the abi-encoded `Error(string)` for the mock's
         // revert message — assert the indexed guid and the non-indexed
         // scalar/string fields, ignore `reason` byte-for-byte.
-        vm.expectEmit(true, false, false, false, address(adapter));
+        vm.expectEmit(true, true, false, false, address(adapter));
         emit ComposeFundsInFailed(
             guid, SOURCE_CHAIN_ID, amount, nativeValue, destChainId, destAddr, opId, EMPTY_SETTLEMENT_DATA, ''
         );
@@ -584,7 +584,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes32 guid = bytes32('malformed-guid');
 
-        vm.expectEmit(true, false, false, true, address(adapter));
+        vm.expectEmit(true, true, false, true, address(adapter));
         emit ComposeFundsInFailed(
             guid, 0, amount, nativeValue, 0, '', 0, '', bytes('malformed compose payload')
         );
@@ -1148,7 +1148,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes32 guid = bytes32('credited-guid');
 
-        vm.expectEmit(true, false, false, true, address(adapter));
+        vm.expectEmit(true, true, false, true, address(adapter));
         emit ComposeFundsIn(
             guid,
             SOURCE_CHAIN_ID,
@@ -1198,7 +1198,7 @@ contract UtexoLZAdapterTest is Test {
             abi.encode(SOURCE_CHAIN_ID, destChainId, destAddr, opId, settlementData, nativeValue)
         );
 
-        vm.expectEmit(true, false, false, true, address(adapter));
+        vm.expectEmit(true, true, false, true, address(adapter));
         emit ComposeFundsInFailed(
             guid,
             SOURCE_CHAIN_ID,

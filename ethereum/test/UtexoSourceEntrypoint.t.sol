@@ -23,7 +23,7 @@ contract UtexoSourceEntrypointTest is Test {
         uint256 sourceChainId,
         uint256 destinationChainId,
         string  destinationAddress,
-        uint256 operationId,
+        uint256 indexed operationId,
         bytes   settlementData
     );
 
@@ -260,7 +260,7 @@ contract UtexoSourceEntrypointTest is Test {
 
         uint256 userBalBefore = user.balance;
 
-        vm.expectEmit(true, true, false, true, address(entrypoint));
+        vm.expectEmit(true, true, true, true, address(entrypoint));
         emit Deposit(
             keccak256(abi.encode('mock-guid', uint64(1))),
             user,
@@ -360,7 +360,7 @@ contract UtexoSourceEntrypointTest is Test {
         vm.startPrank(user);
         token.approve(address(entrypoint), p.amountLD);
 
-        vm.expectEmit(true, true, false, true, address(entrypoint));
+        vm.expectEmit(true, true, true, true, address(entrypoint));
         emit Deposit(
             keccak256(abi.encode('mock-guid', uint64(1))),
             user, p.amountLD, block.chainid,

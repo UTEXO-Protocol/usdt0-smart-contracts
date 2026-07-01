@@ -91,7 +91,7 @@ interface IUtexoSourceEntrypoint {
         uint256 sourceChainId,
         uint256 destinationChainId,
         string  destinationAddress,
-        uint256 operationId,
+        uint256 indexed operationId,
         bytes   settlementData
     );
 

@@ -93,7 +93,7 @@ interface IUtexoLZAdapter {
         uint256 amountLD,
         uint256 destinationChainId,
         string  destinationAddress,
-        uint256 operationId,
+        uint256 indexed operationId,
         bytes   settlementData
     );
 
@@ -121,7 +121,7 @@ interface IUtexoLZAdapter {
         uint256 nativeValue,
         uint256 destinationChainId,
         string  destinationAddress,
-        uint256 operationId,
+        uint256 indexed operationId,
         bytes   settlementData,
         bytes   reason
     );
