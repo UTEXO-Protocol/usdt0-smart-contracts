@@ -21,7 +21,11 @@ interface IUtexoLZAdapter {
     /// @param nativeValue         Native (wei) the LayerZero Executor forwarded
     ///                            into `lzCompose` — non-zero on NATIVE-currency
     ///                            commission routes, zero on TOKEN routes.
-    /// @param operationId         Backend-assigned operation id from `composeMsg`.
+    /// @param sourceSender        Authenticated source-chain sender from
+    ///                            `composeMsg` (left-padded to `bytes32`), stamped
+    ///                            by `UtexoSourceEntrypoint`. Bridge would have
+    ///                            folded it into `operationId` had the call
+    ///                            succeeded; kept for correlation on the failure.
     /// @param sourceChainId       EVM chain id of the source chain, set by
     ///                            `UtexoSourceEntrypoint` from `block.chainid` at
     ///                            deposit time and cross-checked in `lzCompose`
@@ -33,11 +37,11 @@ interface IUtexoLZAdapter {
     /// @param destinationAddress  Final recipient on the destination chain.
     /// @param settlementData      Opaque blob plumbed through to the
     ///                            destination route's `SettlementModule.onFundsIn`
-    ///                            on the Bridge.
+    ///                            on the Bridge (RGB OpId for the RGB route).
     struct StuckFunds {
         uint256 amountLD;
         uint256 nativeValue;
-        uint256 operationId;
+        bytes32 sourceSender;
         uint256 sourceChainId;
         uint256 destinationChainId;
         string  destinationAddress;
@@ -76,24 +80,28 @@ interface IUtexoLZAdapter {
 
     /// @notice Emitted on a successful inbound `lzCompose` → `Bridge.fundsIn` call.
     /// @param guid                LayerZero message guid.
+    /// @param operationId         Canonical bridge-side operation id derived
+    ///                            on-chain by `Bridge.fundsIn` and returned to the
+    ///                            adapter — matches `Bridge.BridgeFundsIn.operationId`.
+    /// @param sourceSender        Authenticated source-chain sender folded into
+    ///                            `operationId` (left-padded to `bytes32`).
     /// @param sourceChainId       EVM chain id of the source chain (from `composeMsg`,
     ///                            set by `UtexoSourceEntrypoint` from `block.chainid`).
     /// @param amountLD            Amount of USDT0 forwarded into the Bridge (gross).
     /// @param destinationChainId  Target chain id (`uint256`; backend-assigned for
     ///                            non-EVM destinations).
     /// @param destinationAddress  Target address on the destination chain.
-    /// @param operationId         Backend-assigned operation identifier.
     /// @param settlementData      Opaque blob forwarded to the destination
     ///                            route's `SettlementModule.onFundsIn` on the
-    ///                            Bridge. Empty for routes registered with
-    ///                            `NullSettlementModule`.
+    ///                            Bridge (RGB OpId for the RGB route).
     event ComposeFundsIn(
         bytes32 indexed guid,
+        bytes32 indexed operationId,
+        bytes32 sourceSender,
         uint256 sourceChainId,
         uint256 amountLD,
         uint256 destinationChainId,
         string  destinationAddress,
-        uint256 indexed operationId,
         bytes   settlementData
     );
 
@@ -114,14 +122,16 @@ interface IUtexoLZAdapter {
     ///         under `stuckFunds[guid]` until resolved.
     /// @param reason Raw revert returndata from `Bridge.fundsIn` — keep as
     ///               `bytes` because Bridge can revert with any custom error.
+    /// @dev No `operationId` here: the Bridge call reverted, so none was derived.
+    ///      `sourceSender` is carried for correlation instead.
     event ComposeFundsInFailed(
         bytes32 indexed guid,
+        bytes32 indexed sourceSender,
         uint256 sourceChainId,
         uint256 amountLD,
         uint256 nativeValue,
         uint256 destinationChainId,
         string  destinationAddress,
-        uint256 indexed operationId,
         bytes   settlementData,
         bytes   reason
     );
