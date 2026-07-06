@@ -11,6 +11,8 @@ import { IUtexoLZAdapter } from '../src/interfaces/IUtexoLZAdapter.sol';
 import { MockERC20 }  from './mocks/MockERC20.sol';
 import { MockOFT }    from './mocks/MockOFT.sol';
 import { MockBridge } from './mocks/MockBridge.sol';
+import { ZeroApprovalRevertingERC20 } from './mocks/ZeroApprovalRevertingERC20.sol';
+import { ZeroAmountBridge } from './mocks/ZeroAmountBridge.sol';
 
 /// @title UtexoLZAdapterTest
 /// @notice Verifies the inbound (`lzCompose` → `Bridge.fundsIn`) and outbound
@@ -389,6 +391,102 @@ contract UtexoLZAdapterTest is Test {
         assertEq(rec.destinationChainId, 0, 'no stuck destination chain');
         assertEq(rec.destinationAddress, '', 'no stuck destination address');
         assertEq(rec.settlementData, '', 'no stuck settlement data');
+    }
+
+    /// @dev Current behavior: if Bridge reverts and the catch-path allowance
+    ///      cleanup also reverts, lzCompose bubbles the cleanup failure before
+    ///      writing a recoverable stuck record.
+    function test_catchCleanupRevertLeavesNoStuckRecord_currentBehavior() public {
+        ZeroApprovalRevertingERC20 badToken = new ZeroApprovalRevertingERC20();
+        MockOFT badOft = new MockOFT(address(badToken));
+        MockBridge badBridge = new MockBridge(address(badToken));
+        UtexoLZAdapter badAdapter = new UtexoLZAdapter(
+            endpoint,
+            address(badOft),
+            address(badToken),
+            address(badBridge),
+            multisigProxy
+        );
+
+        vm.prank(multisigProxy);
+        badAdapter.setTrustedEntrypoint(SRC_EID, TRUSTED_ENTRYPOINT_B32, SOURCE_CHAIN_ID);
+
+        uint256 amount      = 1e6;
+        uint256 nativeValue = 0.005 ether;
+        bytes32 guid        = bytes32('cleanup-fail');
+
+        badBridge.setReverts(true);
+        badToken.mint(address(badAdapter), amount);
+
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, 'tb1q-cleanup', 505, EMPTY_SETTLEMENT_DATA)
+        );
+
+        vm.prank(endpoint);
+        vm.expectRevert(bytes('ZeroApprovalRevertingERC20: zero approval'));
+        badAdapter.lzCompose{ value: nativeValue }(
+            address(badOft), guid, message, address(0), ''
+        );
+
+        assertEq(badToken.balanceOf(address(badAdapter)), amount, 'adapter still holds tokens');
+        assertEq(badToken.balanceOf(address(badBridge)), 0, 'bridge unchanged');
+        assertEq(address(badAdapter).balance, 0, 'native value reverted');
+        assertEq(badToken.allowance(address(badAdapter), address(badBridge)), 0, 'allowance reverted');
+
+        IUtexoLZAdapter.StuckFunds memory rec = badAdapter.getStuckFunds(guid);
+        assertEq(rec.amountLD, 0, 'no stuck amount');
+        assertEq(rec.nativeValue, 0, 'no stuck native value');
+        assertEq(rec.operationId, 0, 'no stuck operation');
+    }
+
+    /// @dev Current behavior: a zero credited amount can still enter the catch
+    ///      path. If native value was supplied, the adapter stores a native-only
+    ///      stuck record that refundStuckFunds treats as nonexistent.
+    function test_zeroCreditedAmountCreatesUnrecoverableNativeStuckRecord_currentBehavior() public {
+        ZeroAmountBridge zeroBridge = new ZeroAmountBridge();
+        UtexoLZAdapter zeroAdapter = new UtexoLZAdapter(
+            endpoint,
+            address(oft),
+            address(token),
+            address(zeroBridge),
+            multisigProxy
+        );
+
+        vm.prank(multisigProxy);
+        zeroAdapter.setTrustedEntrypoint(SRC_EID, TRUSTED_ENTRYPOINT_B32, SOURCE_CHAIN_ID);
+
+        uint256 nativeValue = 0.004 ether;
+        bytes32 guid        = bytes32('zero-credit');
+
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, 0, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, RGB_CHAIN_ID, 'tb1q-zero', 606, EMPTY_SETTLEMENT_DATA)
+        );
+
+        vm.prank(endpoint);
+        zeroAdapter.lzCompose{ value: nativeValue }(
+            address(oft), guid, message, address(0), ''
+        );
+
+        assertEq(address(zeroAdapter).balance, nativeValue, 'adapter holds native');
+        assertEq(token.balanceOf(address(zeroAdapter)), 0, 'no token amount credited');
+        assertEq(token.allowance(address(zeroAdapter), address(zeroBridge)), 0, 'allowance reset');
+
+        IUtexoLZAdapter.StuckFunds memory rec = zeroAdapter.getStuckFunds(guid);
+        assertEq(rec.amountLD, 0, 'zero stuck amount');
+        assertEq(rec.nativeValue, nativeValue, 'native value stored');
+        assertEq(rec.operationId, 606, 'operation stored');
+        assertEq(rec.sourceChainId, SOURCE_CHAIN_ID, 'source chain stored');
+        assertEq(rec.destinationChainId, RGB_CHAIN_ID, 'destination chain stored');
+        assertEq(rec.destinationAddress, 'tb1q-zero', 'destination stored');
+        assertEq(rec.settlementData, EMPTY_SETTLEMENT_DATA, 'settlement data stored');
+
+        vm.prank(multisigProxy);
+        vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.NoStuckFunds.selector, guid));
+        zeroAdapter.refundStuckFunds(guid, payable(makeAddr('refundTo')));
+
+        assertEq(address(zeroAdapter).balance, nativeValue, 'native remains unrecovered');
     }
 
     /// @dev Current behavior: if Bridge rejects the forwarded compose because
@@ -838,6 +936,32 @@ contract UtexoLZAdapterTest is Test {
         // Record is gone.
         IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
         assertEq(rec.amountLD, 0, 'record deleted');
+    }
+
+    function test_refundStuckFunds_rejectsSecondRefundForSameGuid() public {
+        uint256 amount      = 1_500e6;
+        uint256 nativeValue = 0.02 ether;
+        bytes32 guid        = bytes32('single-use-refund');
+
+        _createStuckRecord(guid, amount, nativeValue, RGB_CHAIN_ID, 'tb1q-once', 13);
+
+        address payable refundTo = payable(makeAddr('refundTo'));
+
+        vm.prank(multisigProxy);
+        adapter.refundStuckFunds(guid, refundTo);
+
+        uint256 tokenAfterFirst  = token.balanceOf(refundTo);
+        uint256 nativeAfterFirst = refundTo.balance;
+
+        assertEq(tokenAfterFirst, amount, 'first refund sent tokens');
+        assertEq(nativeAfterFirst, nativeValue, 'first refund sent native');
+
+        vm.prank(multisigProxy);
+        vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.NoStuckFunds.selector, guid));
+        adapter.refundStuckFunds(guid, refundTo);
+
+        assertEq(token.balanceOf(refundTo), tokenAfterFirst, 'second refund sends no tokens');
+        assertEq(refundTo.balance, nativeAfterFirst, 'second refund sends no native');
     }
 
     function test_refundStuckFunds_tokenOnlyWhenNativeValueIsZero() public {
