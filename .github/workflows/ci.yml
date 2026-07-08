@@ -83,7 +83,7 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Start TRE container
-        run: docker run --platform linux/arm64 -d --name tre -p 9095:9090 tronbox/tre
+        run: docker run --platform linux/arm64 -d --name tre -p 9095:9090 tronbox/tre useDefaultPrivateKey=true
 
       - name: Wait for TRE RPC
         run: |
