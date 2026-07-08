@@ -85,16 +85,19 @@ jobs:
 
       - name: Wait for TRE RPC
         run: |
-          for i in {1..60}; do
-            if curl -sf -X POST "http://127.0.0.1:9095/wallet/getnodeinfo" \
+          for i in {1..150}; do
+            response="$(curl -sS -X POST "http://127.0.0.1:9095/wallet/getnowblock" \
               -H "Content-Type: application/json" \
-              -d "{}" > /dev/null; then
+              -d "{}" || true)"
+            if [[ "$response" == *"blockID"* ]]; then
               echo "TRE is ready"
               exit 0
             fi
             sleep 2
           done
           echo "TRE did not become ready in time"
+          docker ps -a || true
+          docker logs tre || true
           exit 1
 
       - name: Run Tron tests
