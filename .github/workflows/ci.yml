@@ -102,6 +102,32 @@ jobs:
           docker logs tre || true
           exit 1
 
+      - name: Export TRE development private key
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+
+          logs = subprocess.check_output(["docker", "logs", "tre"], stderr=subprocess.STDOUT, text=True)
+          match = re.search(r"Private Keys\s*=+\s*\n(?:.*\n)*?\(0\)\s*([0-9a-fA-F]{64})", logs)
+          if not match:
+              print("Failed to parse TRE private key from container logs")
+              print(logs)
+              sys.exit(1)
+
+          key = match.group(1).lower()
+          github_env = os.environ.get("GITHUB_ENV")
+          if not github_env:
+              print("GITHUB_ENV is not set")
+              sys.exit(1)
+
+          with open(github_env, "a", encoding="utf-8") as f:
+              f.write(f"PRIVATE_KEY_DEVELOPMENT={key}\n")
+          print("Exported PRIVATE_KEY_DEVELOPMENT from TRE logs")
+          PY
+
       - name: Run Tron tests
         run: npx tronbox test --network development
 
