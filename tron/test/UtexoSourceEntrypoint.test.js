@@ -98,6 +98,29 @@ async function sendExpectRevert(sendPromise) {
 }
 
 /**
+ * Waits for tx confirmation and asserts it succeeded on-chain.
+ */
+async function sendExpectSuccess(sendPromise) {
+  let txid = await sendPromise;
+  if (typeof txid !== 'string') {
+    txid = (txid && (txid.txid || txid.transaction?.txID)) || String(txid);
+  }
+  const info = await waitForTxInfo(txid);
+  const receiptResult = info.receipt && info.receipt.result;
+  const failed =
+       receiptResult === 'REVERT'
+    || receiptResult === 'OUT_OF_ENERGY'
+    || receiptResult === 'OUT_OF_TIME'
+    || receiptResult === 'BAD_JUMP_DESTINATION'
+    || info.result === 'FAILED';
+  if (failed) {
+    const msg = info.resMessage ? Buffer.from(info.resMessage, 'hex').toString('utf8') : '';
+    assert.fail(`Expected SUCCESS, got receipt.result=${receiptResult}; resMessage=${msg}`);
+  }
+  return info;
+}
+
+/**
  * Asserts that a deploy resulted in a constructor revert (TVM finalises the
  * tx successfully but writes no code to the address).
  */
@@ -236,9 +259,11 @@ contract('UtexoSourceEntrypoint', () => {
     it('pulls tokens and forwards SendParam to OFT', async () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
 
-      await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
-      ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
 
       // OFT received the tokens (proves allowance was set and pull happened).
       assert.equal(
@@ -278,9 +303,11 @@ contract('UtexoSourceEntrypoint', () => {
     it('builds composeMsg = abi.encode(block.chainid, destChainId, destAddr, opId, settlementData)', async () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
 
-      await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
-      ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
 
       const composeMsg = await oft.lastComposeMsg().call();
       const decoded = tronWeb.utils.abi.decodeParams(
@@ -310,9 +337,11 @@ contract('UtexoSourceEntrypoint', () => {
 
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
 
-      await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadWithBlob]
-      ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadWithBlob]
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
 
       const composeMsg = await oft.lastComposeMsg().call();
       const decoded = tronWeb.utils.abi.decodeParams(
@@ -335,9 +364,11 @@ contract('UtexoSourceEntrypoint', () => {
       const extra = '0x0003010011010000000000000000000000000000ea60';
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
 
-      await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, extra, payload]
-      ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, extra, payload]
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
 
       assert.equal(
         (await oft.lastExtraOptions().call()).toLowerCase(),
