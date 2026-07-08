@@ -361,7 +361,7 @@ contract('UtexoSourceEntrypoint', () => {
     });
 
     it('forwards extraOptions byte-for-byte', async () => {
-      const extra = '0x0003010011010000000000000000000000000000ea60';
+      const extra = '0x1234abcd00ff';
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
 
       await sendExpectSuccess(
