@@ -6,11 +6,10 @@ on:
       - ".github/workflows/ci.yml"
       - "ethereum/**"
       - "tron/**"
-  push:
-    paths:
-      - ".github/workflows/ci.yml"
-      - "ethereum/**"
-      - "tron/**"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   evm-foundry:
