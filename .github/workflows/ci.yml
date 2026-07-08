@@ -79,12 +79,15 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Start TRE container
-        run: docker run -d --name tre -p 9095:9090 tronbox/tre
+        run: docker run --platform linux/amd64 -d --name tre -p 9095:9090 tronbox/tre
 
       - name: Wait for TRE RPC
         run: |
-          for i in {1..150}; do
+          for i in {1..90}; do
             response="$(curl -sS -X POST "http://127.0.0.1:9095/wallet/getnowblock" \
               -H "Content-Type: application/json" \
               -d "{}" || true)"
