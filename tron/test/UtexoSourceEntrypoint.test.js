@@ -185,7 +185,9 @@ contract('UtexoSourceEntrypoint', () => {
     token = await deploy(MockERC20._json, 'Mock USDT', 'USDT');
     oft   = await deploy(MockOFT._json, token.address);
 
-    await oft.setNativeFee(NATIVE_FEE).send({ feeLimit: FEE_LIMIT });
+    await sendExpectSuccess(
+      oft.setNativeFee(NATIVE_FEE).send({ feeLimit: FEE_LIMIT })
+    );
 
     entrypoint = await deploy(
       UtexoSourceEntrypoint._json,
@@ -196,7 +198,9 @@ contract('UtexoSourceEntrypoint', () => {
     );
 
     // Fund the deployer with 1M USDT (6 decimals).
-    await token.mint(deployerAddr, '1000000000000').send({ feeLimit: FEE_LIMIT });
+    await sendExpectSuccess(
+      token.mint(deployerAddr, '1000000000000').send({ feeLimit: FEE_LIMIT })
+    );
 
     payload = encodePayload(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID);
   });
@@ -257,7 +261,9 @@ contract('UtexoSourceEntrypoint', () => {
 
   describe('deposit (happy path)', () => {
     it('pulls tokens and forwards SendParam to OFT', async () => {
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
 
       await sendExpectSuccess(
         entrypoint.deposit(
@@ -301,7 +307,9 @@ contract('UtexoSourceEntrypoint', () => {
     });
 
     it('builds composeMsg = abi.encode(block.chainid, destChainId, destAddr, opId, settlementData)', async () => {
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
 
       await sendExpectSuccess(
         entrypoint.deposit(
@@ -335,7 +343,9 @@ contract('UtexoSourceEntrypoint', () => {
       const blob = '0xdeadbeefcafebabe1122334455667788';
       const payloadWithBlob = encodePayload(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, blob);
 
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
 
       await sendExpectSuccess(
         entrypoint.deposit(
@@ -362,7 +372,9 @@ contract('UtexoSourceEntrypoint', () => {
 
     it('forwards extraOptions byte-for-byte', async () => {
       const extra = '0x1234abcd00ff';
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
 
       await sendExpectSuccess(
         entrypoint.deposit(
@@ -393,7 +405,9 @@ contract('UtexoSourceEntrypoint', () => {
     });
 
     it('reverts on insufficient native fee', async () => {
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
       await sendExpectRevert(
         entrypoint.deposit(
           [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
@@ -402,7 +416,9 @@ contract('UtexoSourceEntrypoint', () => {
     });
 
     it('reverts on malformed payload (too short to decode)', async () => {
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
       await sendExpectRevert(
         entrypoint.deposit(
           [AMOUNT_LD, AMOUNT_LD, '0x0003', '0x01020304']
@@ -420,8 +436,12 @@ contract('UtexoSourceEntrypoint', () => {
     });
 
     it('propagates OFT.send revert', async () => {
-      await oft.setSendReverts(true).send({ feeLimit: FEE_LIMIT });
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        oft.setSendReverts(true).send({ feeLimit: FEE_LIMIT })
+      );
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
       await sendExpectRevert(
         entrypoint.deposit(
           [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
@@ -437,7 +457,9 @@ contract('UtexoSourceEntrypoint', () => {
   describe('quote', () => {
     it('returns the OFT-supplied nativeFee unchanged', async () => {
       const FEE = 12_345_678;
-      await oft.setNativeFee(FEE).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        oft.setNativeFee(FEE).send({ feeLimit: FEE_LIMIT })
+      );
 
       const quoted = await entrypoint.quote(
         [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
