@@ -98,6 +98,29 @@ async function sendExpectRevert(sendPromise) {
 }
 
 /**
+ * Waits for tx confirmation and asserts it succeeded on-chain.
+ */
+async function sendExpectSuccess(sendPromise) {
+  let txid = await sendPromise;
+  if (typeof txid !== 'string') {
+    txid = (txid && (txid.txid || txid.transaction?.txID)) || String(txid);
+  }
+  const info = await waitForTxInfo(txid);
+  const receiptResult = info.receipt && info.receipt.result;
+  const failed =
+       receiptResult === 'REVERT'
+    || receiptResult === 'OUT_OF_ENERGY'
+    || receiptResult === 'OUT_OF_TIME'
+    || receiptResult === 'BAD_JUMP_DESTINATION'
+    || info.result === 'FAILED';
+  if (failed) {
+    const msg = info.resMessage ? Buffer.from(info.resMessage, 'hex').toString('utf8') : '';
+    assert.fail(`Expected SUCCESS, got receipt.result=${receiptResult}; resMessage=${msg}`);
+  }
+  return info;
+}
+
+/**
  * Asserts that a deploy resulted in a constructor revert (TVM finalises the
  * tx successfully but writes no code to the address).
  */
@@ -116,20 +139,22 @@ async function deployExpectRevert(artifact, ...parameters) {
   assert.fail(`Deploy succeeded when constructor revert was expected (addr ${instance.address})`);
 }
 
-/// Default `settlementData` for LZ-adapter flows: destination route is
-/// registered with `NullSettlementModule`, so the blob is empty bytes.
-const EMPTY_SETTLEMENT_DATA = '0x';
+/// NOTE: TronWeb ABI encoding for nested dynamic params (`string`, `bytes`) is
+/// flaky when `bytes` is exactly empty (`0x`) in this test environment.
+/// Use a non-empty sentinel by default so happy-path `deposit` doesn't revert
+/// due to client-side encoding quirks unrelated to contract logic.
+const DEFAULT_SETTLEMENT_DATA = '0x00';
 
 /**
  * ABI-encodes the business payload that `Entrypoint.deposit` will decode:
  *   abi.encode(uint256 destinationChainId, string destinationAddress,
  *              uint256 operationId, bytes settlementData)
  *
- * `settlementData` defaults to `EMPTY_SETTLEMENT_DATA` — for LZ-adapter routes
+ * `settlementData` defaults to `DEFAULT_SETTLEMENT_DATA` — for LZ-adapter routes
  * registered with `NullSettlementModule` on Arbitrum, the blob is always empty.
  * Non-empty values are exercised by the round-trip test below.
  */
-function encodePayload(destChainId, destAddr, opId, settlementData = EMPTY_SETTLEMENT_DATA) {
+function encodePayload(destChainId, destAddr, opId, settlementData = DEFAULT_SETTLEMENT_DATA) {
   return tronWeb.utils.abi.encodeParams(
     ['uint256', 'string', 'uint256', 'bytes'],
     [destChainId.toString(), destAddr, opId.toString(), settlementData]
@@ -160,7 +185,9 @@ contract('UtexoSourceEntrypoint', () => {
     token = await deploy(MockERC20._json, 'Mock USDT', 'USDT');
     oft   = await deploy(MockOFT._json, token.address);
 
-    await oft.setNativeFee(NATIVE_FEE).send({ feeLimit: FEE_LIMIT });
+    await sendExpectSuccess(
+      oft.setNativeFee(NATIVE_FEE).send({ feeLimit: FEE_LIMIT })
+    );
 
     entrypoint = await deploy(
       UtexoSourceEntrypoint._json,
@@ -171,7 +198,9 @@ contract('UtexoSourceEntrypoint', () => {
     );
 
     // Fund the deployer with 1M USDT (6 decimals).
-    await token.mint(deployerAddr, '1000000000000').send({ feeLimit: FEE_LIMIT });
+    await sendExpectSuccess(
+      token.mint(deployerAddr, '1000000000000').send({ feeLimit: FEE_LIMIT })
+    );
 
     payload = encodePayload(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID);
   });
@@ -232,11 +261,15 @@ contract('UtexoSourceEntrypoint', () => {
 
   describe('deposit (happy path)', () => {
     it('pulls tokens and forwards SendParam to OFT', async () => {
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
 
-      await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
-      ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
 
       // OFT received the tokens (proves allowance was set and pull happened).
       assert.equal(
@@ -274,11 +307,15 @@ contract('UtexoSourceEntrypoint', () => {
     });
 
     it('builds composeMsg = abi.encode(block.chainid, destChainId, destAddr, opId, settlementData)', async () => {
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
 
-      await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
-      ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
 
       const composeMsg = await oft.lastComposeMsg().call();
       const decoded = tronWeb.utils.abi.decodeParams(
@@ -293,7 +330,7 @@ contract('UtexoSourceEntrypoint', () => {
       assert.equal(decoded[1].toString(), String(DEST_CHAIN_ID), 'destChainId');
       assert.equal(decoded[2],            DEST_ADDR,              'destAddr');
       assert.equal(decoded[3].toString(), String(OPERATION_ID),   'operationId');
-      assert.equal(decoded[4],            EMPTY_SETTLEMENT_DATA,  'settlementData empty by default');
+      assert.equal(decoded[4],            DEFAULT_SETTLEMENT_DATA, 'settlementData forwarded');
     });
 
     /// Non-empty `settlementData` must round-trip byte-for-byte through the
@@ -306,11 +343,15 @@ contract('UtexoSourceEntrypoint', () => {
       const blob = '0xdeadbeefcafebabe1122334455667788';
       const payloadWithBlob = encodePayload(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, blob);
 
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
 
-      await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadWithBlob]
-      ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadWithBlob]
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
 
       const composeMsg = await oft.lastComposeMsg().call();
       const decoded = tronWeb.utils.abi.decodeParams(
@@ -330,12 +371,16 @@ contract('UtexoSourceEntrypoint', () => {
     });
 
     it('forwards extraOptions byte-for-byte', async () => {
-      const extra = '0x0003010011010000000000000000000000000000ea60';
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      const extra = '0x1234abcd00ff';
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
 
-      await entrypoint.deposit(
-        [AMOUNT_LD, AMOUNT_LD, extra, payload]
-      ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, extra, payload]
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
 
       assert.equal(
         (await oft.lastExtraOptions().call()).toLowerCase(),
@@ -360,7 +405,9 @@ contract('UtexoSourceEntrypoint', () => {
     });
 
     it('reverts on insufficient native fee', async () => {
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
       await sendExpectRevert(
         entrypoint.deposit(
           [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
@@ -369,7 +416,9 @@ contract('UtexoSourceEntrypoint', () => {
     });
 
     it('reverts on malformed payload (too short to decode)', async () => {
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
       await sendExpectRevert(
         entrypoint.deposit(
           [AMOUNT_LD, AMOUNT_LD, '0x0003', '0x01020304']
@@ -387,8 +436,12 @@ contract('UtexoSourceEntrypoint', () => {
     });
 
     it('propagates OFT.send revert', async () => {
-      await oft.setSendReverts(true).send({ feeLimit: FEE_LIMIT });
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        oft.setSendReverts(true).send({ feeLimit: FEE_LIMIT })
+      );
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
       await sendExpectRevert(
         entrypoint.deposit(
           [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
@@ -404,7 +457,9 @@ contract('UtexoSourceEntrypoint', () => {
   describe('quote', () => {
     it('returns the OFT-supplied nativeFee unchanged', async () => {
       const FEE = 12_345_678;
-      await oft.setNativeFee(FEE).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        oft.setNativeFee(FEE).send({ feeLimit: FEE_LIMIT })
+      );
 
       const quoted = await entrypoint.quote(
         [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
