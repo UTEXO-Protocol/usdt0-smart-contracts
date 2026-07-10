@@ -34,17 +34,20 @@ import { IUtexoSourceEntrypoint } from './interfaces/IUtexoSourceEntrypoint.sol'
 ///       • `dstEid` and `lzAdapter` are fixed at construction and cannot be
 ///         re-pointed at a different destination by the caller or anyone else.
 ///       • `composeMsg` is built by the entrypoint as
-///         `abi.encode(block.chainid, destinationChainId, destinationAddress, operationId, settlementData)`,
-///         where the destination fields and `settlementData` are extracted from
-///         the caller-supplied `payload` blob via `abi.decode`. All chain
+///         `abi.encode(block.chainid, sourceSender, destinationChainId, destinationAddress, settlementData, expectedComposeValue)`,
+///         where `sourceSender` is `msg.sender` left-padded to `bytes32` and the
+///         destination fields + `settlementData` are extracted from the
+///         caller-supplied `payload` blob via `abi.decode`. All chain
 ///         identifiers are `uint256` (real `block.chainid` for EVM endpoints,
-///         backend-assigned ids above the EVM range). `settlementData` is an opaque blob whose layout
-///         is dictated by the destination route's `SettlementModule` on
-///         Arbitrum — the entrypoint plumbs it through unchanged. For routes
-///         registered with `NullSettlementModule` (the default for LZ-adapter
-///         flows) it is empty (`""`). A malformed `payload` reverts here on the
-///         source chain so no LZ fee is ever paid for an un-decodable compose,
-///         and the `sourceChainId` part is non-spoofable.
+///         backend-assigned ids above the EVM range). `settlementData` is an
+///         opaque blob whose layout is dictated by the destination route's
+///         `SettlementModule` on Arbitrum (for the RGB route it carries the RGB
+///         OpId as `abi.encode(uint256)`) — the entrypoint plumbs it through
+///         unchanged. A malformed `payload` reverts here on the source chain so
+///         no LZ fee is ever paid for an un-decodable compose. Both
+///         `sourceChainId` and `sourceSender` are stamped by the entrypoint and
+///         so are non-spoofable; Bridge folds `sourceSender` into the derived
+///         `operationId`.
 ///       • LayerZero fee is re-quoted on-chain; surplus `msg.value` is refunded to
 ///         `msg.sender`.
 contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable, ReentrancyGuard {
@@ -61,8 +64,8 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     ///         chain. Capping it here keeps an honest deposit from ever encoding
     ///         an oversized blob into the LayerZero `composeMsg`, which the
     ///         destination adapter would then have to bound (or strand) on the
-    ///         failure path. 1024 bytes is ample for the empty
-    ///         `NullSettlementModule` blob used by LZ routes.
+    ///         failure path. 1024 bytes is ample for the RGB route's 32-byte
+    ///         `abi.encode(uint256 rgbOpId)` blob (or empty for routes needing none).
     uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 1024;
 
     /// @notice Upper bound on the `destinationAddress` byte length, mirroring
@@ -148,9 +151,8 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         (
             uint256 destinationChainId,
             string memory destinationAddress,
-            uint256 operationId,
             bytes memory settlementData
-        ) = abi.decode(depositParams.payload, (uint256, string, uint256, bytes));
+        ) = abi.decode(depositParams.payload, (uint256, string, bytes));
 
         // Bound the decoded inputs at the source so oversized values can never
         // enter the cross-chain composeMsg.
@@ -163,9 +165,9 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
 
         bytes memory composeMsg = abi.encode(
             block.chainid,
+            bytes32(uint256(uint160(msg.sender))), // authenticated source sender, stamped by the entrypoint
             destinationChainId,
             destinationAddress,
-            operationId,
             settlementData,
             depositParams.expectedComposeValue
         );
@@ -218,7 +220,6 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             block.chainid,
             destinationChainId,
             destinationAddress,
-            operationId,
             settlementData
         );
     }
@@ -235,9 +236,8 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         (
             uint256 destinationChainId,
             string memory destinationAddress,
-            uint256 operationId,
             bytes memory settlementData
-        ) = abi.decode(depositParams.payload, (uint256, string, uint256, bytes));
+        ) = abi.decode(depositParams.payload, (uint256, string, bytes));
 
         // Same caps as `deposit` so the quote reverts on exactly the inputs the
         // send would reject.
@@ -250,9 +250,9 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
 
         bytes memory composeMsg = abi.encode(
             block.chainid,
+            bytes32(uint256(uint160(msg.sender))), // authenticated source sender, stamped by the entrypoint
             destinationChainId,
             destinationAddress,
-            operationId,
             settlementData,
             depositParams.expectedComposeValue
         );

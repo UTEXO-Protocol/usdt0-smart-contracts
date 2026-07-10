@@ -67,9 +67,10 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     ///         `_stuckFunds[guid]` storage. An unbounded blob
     ///         from a buggy/compromised entrypoint could make the catch-branch
     ///         storage write exhaust the LayerZero Executor gas budget. LZ-adapter
-    ///         routes use `NullSettlementModule` (empty blob), so 1024 bytes is
-    ///         ample headroom. The same cap is mirrored on the source-chain
-    ///         `UtexoSourceEntrypoint`.
+    ///         routes carry only a small blob (the RGB route's `abi.encode(uint256
+    ///         rgbOpId)` is 32 bytes; empty for routes needing none), so 1024
+    ///         bytes is ample headroom. The same cap is mirrored on the
+    ///         source-chain `UtexoSourceEntrypoint`.
     uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 1024;
 
     /// @notice Upper bound on the inbound `destinationAddress` byte length.
@@ -232,15 +233,15 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         //    try/catch, hence the external `decodeComposeMsg` helper.
         try this.decodeComposeMsg(payload) returns (
             uint256 sourceChainId,
+            bytes32 sourceSender,
             uint256 destinationChainId,
             string memory destinationAddress,
-            uint256 operationId,
             bytes memory settlementData,
             uint256 expectedComposeValue
         ) {
             _composeIn(
-                _guid, srcEid_, amountLD, sourceChainId, destinationChainId,
-                destinationAddress, operationId, settlementData, expectedComposeValue
+                _guid, srcEid_, amountLD, sourceChainId, sourceSender, destinationChainId,
+                destinationAddress, settlementData, expectedComposeValue
             );
         } catch {
             _parkUndecodableCompose(_guid, amountLD);
@@ -256,14 +257,14 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         pure
         returns (
             uint256 sourceChainId,
+            bytes32 sourceSender,
             uint256 destinationChainId,
             string  memory destinationAddress,
-            uint256 operationId,
             bytes   memory settlementData,
             uint256 expectedComposeValue
         )
     {
-        return abi.decode(payload, (uint256, uint256, string, uint256, bytes, uint256));
+        return abi.decode(payload, (uint256, bytes32, uint256, string, bytes, uint256));
     }
 
     /// @dev Validate the decoded compose fields, forward into `Bridge.fundsIn`,
@@ -276,9 +277,9 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         uint32  srcEid_,
         uint256 amountLD,
         uint256 sourceChainId,
+        bytes32 sourceSender,
         uint256 destinationChainId,
         string  memory destinationAddress,
-        uint256 operationId,
         bytes   memory settlementData,
         uint256 expectedComposeValue
     ) private {
@@ -309,14 +310,14 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         try IBridge(bridge).fundsIn{ value: msg.value }(
             amountLD,
             sourceChainId,
+            sourceSender,
             destinationChainId,
             destinationAddress,
-            operationId,
             settlementData
-        ) {
+        ) returns (bytes32 operationId) {
             emit ComposeFundsIn(
-                guid, sourceChainId, amountLD,
-                destinationChainId, destinationAddress, operationId, settlementData
+                guid, operationId, sourceSender, sourceChainId, amountLD,
+                destinationChainId, destinationAddress, settlementData
             );
         } catch (bytes memory reason) {
             // Bridge did not pull the approved allowance — reset it so the
@@ -329,7 +330,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             _stuckFunds[guid] = StuckFunds({
                 amountLD:           amountLD,
                 nativeValue:        msg.value,
-                operationId:        operationId,
+                sourceSender:       sourceSender,
                 sourceChainId:      sourceChainId,
                 destinationChainId: destinationChainId,
                 destinationAddress: destinationAddress,
@@ -337,8 +338,8 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             });
 
             emit ComposeFundsInFailed(
-                guid, sourceChainId, amountLD, msg.value,
-                destinationChainId, destinationAddress, operationId, settlementData, reason
+                guid, sourceSender, sourceChainId, amountLD, msg.value,
+                destinationChainId, destinationAddress, settlementData, reason
             );
         }
     }
@@ -355,7 +356,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         record.nativeValue = msg.value;
 
         emit ComposeFundsInFailed(
-            guid, 0, amountLD, msg.value, 0, '', 0, '', bytes('malformed compose payload')
+            guid, bytes32(0), 0, amountLD, msg.value, 0, '', '', bytes('malformed compose payload')
         );
     }
 
