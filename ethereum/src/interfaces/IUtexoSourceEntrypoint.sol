@@ -17,21 +17,37 @@ interface IUtexoSourceEntrypoint {
     ///                     gas budgets and the destination-side `msg.value` forwarded
     ///                     into `UtexoLZAdapter.lzCompose`. Produced by the backend.
     /// @param payload      Caller-supplied business payload encoded as
-    ///                     `abi.encode(uint256 destinationChainId, string destinationAddress, uint256 operationId, bytes settlementData)`.
+    ///                     `abi.encode(uint256 destinationChainId, string destinationAddress, bytes settlementData)`.
     ///                     `settlementData` is an opaque blob consumed by the
-    ///                     destination route's `SettlementModule` on Arbitrum
-    ///                     (empty `""` for routes registered with
-    ///                     `NullSettlementModule`, which is the default for
-    ///                     LZ-adapter flows). The entrypoint decodes the payload
-    ///                     on the source chain to validate the format (malformed
-    ///                     input reverts here, before any LZ fee is paid) and
-    ///                     re-encodes it with `block.chainid` prepended as the
-    ///                     actual `composeMsg` forwarded to LayerZero.
+    ///                     destination route's `SettlementModule` on Arbitrum;
+    ///                     for the RGB route it carries the RGB OpId as
+    ///                     `abi.encode(uint256 rgbOpId)`. The entrypoint decodes
+    ///                     the payload on the source chain to validate the format
+    ///                     (malformed input reverts here, before any LZ fee is
+    ///                     paid) and re-encodes it with `block.chainid` and the
+    ///                     authenticated source sender (`msg.sender`) prepended as
+    ///                     the actual `composeMsg` forwarded to LayerZero. The
+    ///                     source sender is stamped by the entrypoint, not taken
+    ///                     from the payload, so it cannot be spoofed; Bridge folds
+    ///                     it into the derived `operationId`.
+    /// @param refundTo Address that receives the LayerZero native-fee
+    ///                     surplus (and is passed as the OFT `refundAddress`).
+    /// @param expectedComposeValue The native value the backend budgeted as the
+    ///                     destination `lzCompose` drop (the same amount encoded
+    ///                     into `extraOptions`). It is bound into `composeMsg` so
+    ///                     `UtexoLZAdapter.lzCompose` can reject any execution
+    ///                     whose forwarded `msg.value` differs (griefing), while
+    ///                     letting an honestly-funded compose that the Bridge
+    ///                     later rejects (oracle drift) fall through to a
+    ///                     recoverable `_stuckFunds` record. MUST equal the
+    ///                     `lzCompose` native drop set in `extraOptions`.
     struct DepositParams {
         uint256 amountLD;
         uint256 minAmountLD;
         bytes   extraOptions;
         bytes   payload;
+        address refundTo;
+        uint256 expectedComposeValue;
     }
 
     // =========================================================================
@@ -46,6 +62,7 @@ interface IUtexoSourceEntrypoint {
     error InsufficientNativeFee(uint256 provided, uint256 required);
     error NativeRefundFailed();
     error SettlementDataTooLong(uint256 length, uint256 maxLength);
+    error DestinationAddressTooLong(uint256 length, uint256 maxLength);
 
     // =========================================================================
     // Events
@@ -64,12 +81,12 @@ interface IUtexoSourceEntrypoint {
     /// @param destinationChainId  Final destination chain id (`uint256`; passes through
     ///                            to Bridge unchanged).
     /// @param destinationAddress  Final recipient address on `destinationChainId`.
-    /// @param operationId         Backend-assigned operation id (consumed by the
-    ///                            destination route's settlement module on Bridge).
     /// @param settlementData      Opaque blob plumbed through to
     ///                            `Bridge.fundsIn` and into the destination
-    ///                            route's `SettlementModule.onFundsIn`. Empty
-    ///                            for routes using `NullSettlementModule`.
+    ///                            route's `SettlementModule.onFundsIn`. For the
+    ///                            RGB route it carries the RGB OpId
+    ///                            (`abi.encode(uint256 rgbOpId)`); the backend
+    ///                            reads the RGB OpId from here.
     event Deposit(
         bytes32 indexed guid,
         address indexed user,
@@ -77,7 +94,6 @@ interface IUtexoSourceEntrypoint {
         uint256 sourceChainId,
         uint256 destinationChainId,
         string  destinationAddress,
-        uint256 operationId,
         bytes   settlementData
     );
 
