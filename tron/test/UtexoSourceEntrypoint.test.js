@@ -19,7 +19,7 @@ const ZERO_BYTES32  = '0x' + '0'.repeat(64);
 const NATIVE_FEE     = 100_000;         // sun (= 0.1 TRX)
 const DEST_CHAIN_ID  = 1_000_001;       // RGB id in our reserved range
 const DEST_ADDR      = 'tb1q-dest-addr';
-const OPERATION_ID   = 42;
+const RGB_OP_ID      = 42; // RGB OpId, now carried inside settlementData
 
 const AMOUNT_LD = '100000000';          // 100 USDT (6 decimals), as string
 
@@ -138,23 +138,29 @@ async function deployExpectRevert(artifact, ...parameters) {
   assert.fail(`Deploy succeeded when constructor revert was expected (addr ${instance.address})`);
 }
 
-/// Default `settlementData` for LZ-adapter flows: destination route is
-/// registered with `NullSettlementModule`, so the blob is empty bytes.
+/// Empty settlementData — for routes whose module needs none.
 const EMPTY_SETTLEMENT_DATA = '0x';
+
+/// Default RGB-route settlementData: the RGB OpId as `abi.encode(uint256)`.
+const RGB_SETTLEMENT_DATA = tronWeb.utils.abi.encodeParams(
+  ['uint256'],
+  [RGB_OP_ID.toString()]
+);
 
 /**
  * ABI-encodes the business payload that `Entrypoint.deposit` will decode:
  *   abi.encode(uint256 destinationChainId, string destinationAddress,
- *              uint256 operationId, bytes settlementData)
+ *              bytes settlementData)
  *
- * `settlementData` defaults to `EMPTY_SETTLEMENT_DATA` — for LZ-adapter routes
- * registered with `NullSettlementModule` on Arbitrum, the blob is always empty.
- * Non-empty values are exercised by the round-trip test below.
+ * The RGB OpId is no longer a standalone field — it travels inside
+ * `settlementData` (`abi.encode(uint256 rgbOpId)`), which defaults to
+ * `RGB_SETTLEMENT_DATA`. The entrypoint prepends `block.chainid` and the
+ * authenticated source sender (`msg.sender`) when building the composeMsg.
  */
-function encodePayload(destChainId, destAddr, opId, settlementData = EMPTY_SETTLEMENT_DATA) {
+function encodePayload(destChainId, destAddr, settlementData = RGB_SETTLEMENT_DATA) {
   return tronWeb.utils.abi.encodeParams(
-    ['uint256', 'string', 'uint256', 'bytes'],
-    [destChainId.toString(), destAddr, opId.toString(), settlementData]
+    ['uint256', 'string', 'bytes'],
+    [destChainId.toString(), destAddr, settlementData]
   );
 }
 
@@ -210,7 +216,7 @@ contract('UtexoSourceEntrypoint', () => {
     // Fund the deployer with 1M USDT (6 decimals).
     await token.mint(deployerAddr, '1000000000000').send({ feeLimit: FEE_LIMIT });
 
-    payload = encodePayload(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID);
+    payload = encodePayload(DEST_CHAIN_ID, DEST_ADDR);
   });
 
   // ===========================================================================
@@ -531,7 +537,7 @@ contract('UtexoSourceEntrypoint', () => {
       );
     });
 
-    it('builds composeMsg = abi.encode(block.chainid, destChainId, destAddr, opId, settlementData)', async () => {
+    it('builds composeMsg = abi.encode(block.chainid, sourceSender, destChainId, destAddr, settlementData, ecv)', async () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
 
       await entrypoint.deposit(
@@ -541,17 +547,24 @@ contract('UtexoSourceEntrypoint', () => {
       const composeMsg = await oft.lastComposeMsg().call();
       const decoded = tronWeb.utils.abi.decodeParams(
         [],
-        ['uint256', 'uint256', 'string', 'uint256', 'bytes', 'uint256'],
+        ['uint256', 'bytes32', 'uint256', 'string', 'bytes', 'uint256'],
         composeMsg
       );
 
       // decoded[0] is whatever block.chainid the local node reports; we don't
       // pin its value here — just confirm something was prepended.
       assert.isAbove(Number(decoded[0]), 0, 'sourceChainId prepended');
-      assert.equal(decoded[1].toString(), String(DEST_CHAIN_ID), 'destChainId');
-      assert.equal(decoded[2],            DEST_ADDR,              'destAddr');
-      assert.equal(decoded[3].toString(), String(OPERATION_ID),   'operationId');
-      assert.equal(decoded[4],            EMPTY_SETTLEMENT_DATA,  'settlementData empty by default');
+      // Authenticated source sender: msg.sender (the deployer) left-padded to bytes32.
+      const expectedSourceSender =
+        '0x' + '00'.repeat(12) + tronAddrTo20ByteHex(deployerAddr).slice(2);
+      assert.equal(
+        decoded[1].toString().toLowerCase(),
+        expectedSourceSender.toLowerCase(),
+        'sourceSender == depositor (authenticated, stamped by entrypoint)'
+      );
+      assert.equal(decoded[2].toString(), String(DEST_CHAIN_ID), 'destChainId');
+      assert.equal(decoded[3],            DEST_ADDR,              'destAddr');
+      assert.equal(decoded[4],            RGB_SETTLEMENT_DATA,    'settlementData carries the RGB OpId');
       assert.equal(decoded[5].toString(), '0',                    'expectedComposeValue default 0');
     });
 
@@ -568,7 +581,7 @@ contract('UtexoSourceEntrypoint', () => {
       const composeMsg = await oft.lastComposeMsg().call();
       const decoded = tronWeb.utils.abi.decodeParams(
         [],
-        ['uint256', 'uint256', 'string', 'uint256', 'bytes', 'uint256'],
+        ['uint256', 'bytes32', 'uint256', 'string', 'bytes', 'uint256'],
         composeMsg
       );
 
@@ -583,7 +596,7 @@ contract('UtexoSourceEntrypoint', () => {
     /// consume a non-empty blob and the entrypoint must not lose or mangle it.
     it('round-trips non-empty settlementData through composeMsg', async () => {
       const blob = '0xdeadbeefcafebabe1122334455667788';
-      const payloadWithBlob = encodePayload(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, blob);
+      const payloadWithBlob = encodePayload(DEST_CHAIN_ID, DEST_ADDR, blob);
 
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
 
@@ -594,13 +607,12 @@ contract('UtexoSourceEntrypoint', () => {
       const composeMsg = await oft.lastComposeMsg().call();
       const decoded = tronWeb.utils.abi.decodeParams(
         [],
-        ['uint256', 'uint256', 'string', 'uint256', 'bytes', 'uint256'],
+        ['uint256', 'bytes32', 'uint256', 'string', 'bytes', 'uint256'],
         composeMsg
       );
 
-      assert.equal(decoded[1].toString(), String(DEST_CHAIN_ID), 'destChainId');
-      assert.equal(decoded[2],            DEST_ADDR,              'destAddr');
-      assert.equal(decoded[3].toString(), String(OPERATION_ID),   'operationId');
+      assert.equal(decoded[2].toString(), String(DEST_CHAIN_ID), 'destChainId');
+      assert.equal(decoded[3],            DEST_ADDR,              'destAddr');
       assert.equal(
         decoded[4].toLowerCase(),
         blob.toLowerCase(),
@@ -629,7 +641,7 @@ contract('UtexoSourceEntrypoint', () => {
     it('accepts settlementData exactly at the cap', async () => {
       const cap     = Number(await entrypoint.MAX_SETTLEMENT_DATA_LENGTH().call());
       const atCap   = '0x' + '00'.repeat(cap);
-      const payloadAtCap = encodePayload(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, atCap);
+      const payloadAtCap = encodePayload(DEST_CHAIN_ID, DEST_ADDR, atCap);
 
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
       // A full-cap settlementData makes the OFT store a ~1.2 KB composeMsg. Wait
@@ -703,7 +715,7 @@ contract('UtexoSourceEntrypoint', () => {
     it('reverts on settlementData exceeding the cap', async () => {
       const cap     = Number(await entrypoint.MAX_SETTLEMENT_DATA_LENGTH().call());
       const overCap = '0x' + '00'.repeat(cap + 1);
-      const payloadOver = encodePayload(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, overCap);
+      const payloadOver = encodePayload(DEST_CHAIN_ID, DEST_ADDR, overCap);
 
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
       await sendExpectRevert(
@@ -723,7 +735,7 @@ contract('UtexoSourceEntrypoint', () => {
     it('reverts on destinationAddress exceeding the cap', async () => {
       const cap      = Number(await entrypoint.MAX_DESTINATION_ADDRESS_LENGTH().call());
       const longAddr = 'a'.repeat(cap + 1);
-      const payloadLongAddr = encodePayload(DEST_CHAIN_ID, longAddr, OPERATION_ID);
+      const payloadLongAddr = encodePayload(DEST_CHAIN_ID, longAddr);
 
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
       await sendExpectRevert(
@@ -784,7 +796,7 @@ contract('UtexoSourceEntrypoint', () => {
     it('reverts on settlementData exceeding the cap', async () => {
       const cap     = Number(await entrypoint.MAX_SETTLEMENT_DATA_LENGTH().call());
       const overCap = '0x' + '00'.repeat(cap + 1);
-      const payloadOver = encodePayload(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, overCap);
+      const payloadOver = encodePayload(DEST_CHAIN_ID, DEST_ADDR, overCap);
 
       let threw = false;
       try {
