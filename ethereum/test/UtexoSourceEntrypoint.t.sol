@@ -23,7 +23,6 @@ contract UtexoSourceEntrypointTest is Test {
         uint256 sourceChainId,
         uint256 destinationChainId,
         string  destinationAddress,
-        uint256 operationId,
         bytes   settlementData
     );
 
@@ -32,7 +31,9 @@ contract UtexoSourceEntrypointTest is Test {
     ///      the real EVM range is fine — backend owns this namespace.
     uint256 constant DEST_CHAIN_ID = 1_000_001;
     string  constant DEST_ADDR     = 'tb1q-dest-addr';
-    uint256 constant OPERATION_ID  = 42;
+    /// @dev RGB OpId carried inside `settlementData` (`abi.encode(uint256 rgbOpId)`)
+    ///      on the RGB route — it is no longer a standalone payload field.
+    uint256 constant RGB_OP_ID     = 42;
     /// @dev Default settlementData for LZ-adapter flows: the route is registered
     ///      with `NullSettlementModule` on the destination side, so the blob is
     ///      empty. Non-empty values are exercised in `test_deposit_settlementData_roundTrips`.
@@ -260,7 +261,7 @@ contract UtexoSourceEntrypointTest is Test {
 
         uint256 userBalBefore = user.balance;
 
-        vm.expectEmit(true, true, false, true, address(entrypoint));
+        vm.expectEmit(true, true, true, true, address(entrypoint));
         emit Deposit(
             keccak256(abi.encode('mock-guid', uint64(1))),
             user,
@@ -268,8 +269,7 @@ contract UtexoSourceEntrypointTest is Test {
             block.chainid,
             DEST_CHAIN_ID,
             DEST_ADDR,
-            OPERATION_ID,
-            EMPTY_SETTLEMENT_DATA
+            abi.encode(RGB_OP_ID)
         );
 
         bytes32 guid = entrypoint.deposit{ value: NATIVE_FEE }(p);
@@ -287,11 +287,17 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(oft.lastMsgValue(),        NATIVE_FEE,    'msg.value forwarded');
         assertEq(oft.lastRefundAddress(),   user,          'refund addr');
 
-        // Entrypoint rewrote `composeMsg` with `block.chainid` prepended.
+        // Entrypoint rewrote `composeMsg` with `block.chainid` + authenticated
+        // sourceSender (the depositor) prepended.
         bytes memory expectedComposeMsg = abi.encode(
-            block.chainid, DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA, uint256(0)
+            block.chainid,
+            bytes32(uint256(uint160(user))),
+            DEST_CHAIN_ID,
+            DEST_ADDR,
+            abi.encode(RGB_OP_ID),
+            uint256(0)
         );
-        assertEq(oft.lastComposeMsg(), expectedComposeMsg, 'composeMsg = chainid + business');
+        assertEq(oft.lastComposeMsg(), expectedComposeMsg, 'composeMsg = chainid + sourceSender + business');
 
         // Exact-fee call: user's native balance drops by exactly NATIVE_FEE.
         assertEq(user.balance, userBalBefore - NATIVE_FEE, 'no surplus refund expected');
@@ -326,7 +332,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     42e6,
             minAmountLD:  42e6,
             extraOptions: extra,
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA),
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, abi.encode(RGB_OP_ID)),
             refundTo: address(0),
             expectedComposeValue: 0
         });
@@ -352,7 +358,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     7e6,
             minAmountLD:  7e6,
             extraOptions: hex'0003',
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, blob),
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, blob),
             refundTo: address(0),
             expectedComposeValue: 0
         });
@@ -360,18 +366,18 @@ contract UtexoSourceEntrypointTest is Test {
         vm.startPrank(user);
         token.approve(address(entrypoint), p.amountLD);
 
-        vm.expectEmit(true, true, false, true, address(entrypoint));
+        vm.expectEmit(true, true, true, true, address(entrypoint));
         emit Deposit(
             keccak256(abi.encode('mock-guid', uint64(1))),
             user, p.amountLD, block.chainid,
-            DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, blob
+            DEST_CHAIN_ID, DEST_ADDR, blob
         );
 
         entrypoint.deposit{ value: NATIVE_FEE }(p);
         vm.stopPrank();
 
         bytes memory expectedComposeMsg = abi.encode(
-            block.chainid, DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, blob, uint256(0)
+            block.chainid, bytes32(uint256(uint160(user))), DEST_CHAIN_ID, DEST_ADDR, blob, uint256(0)
         );
         assertEq(oft.lastComposeMsg(), expectedComposeMsg, 'composeMsg carries settlementData');
     }
@@ -384,7 +390,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     7e6,
             minAmountLD:  7e6,
             extraOptions: hex'0003',
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA),
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, EMPTY_SETTLEMENT_DATA),
             refundTo:     address(0),
             expectedComposeValue: ecv
         });
@@ -395,12 +401,47 @@ contract UtexoSourceEntrypointTest is Test {
         vm.stopPrank();
 
         bytes memory expectedComposeMsg = abi.encode(
-            block.chainid, DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA, ecv
+            block.chainid, bytes32(uint256(uint160(user))), DEST_CHAIN_ID, DEST_ADDR, EMPTY_SETTLEMENT_DATA, ecv
         );
         assertEq(oft.lastComposeMsg(), expectedComposeMsg, 'composeMsg carries expectedComposeValue');
     }
 
-    /// @dev A malformed `payload` (cannot decode as (uint256, string, uint256, bytes))
+    /// @dev The entrypoint stamps the authenticated source sender
+    ///      (`msg.sender` left-padded to bytes32) into the composeMsg's second
+    ///      field. The value comes from `msg.sender`, not from any payload
+    ///      field, so a caller cannot spoof it — regardless of payload contents.
+    function test_deposit_composeMsgCarriesAuthenticatedSourceSender() public {
+        // A distinct depositor proves the stamped value tracks msg.sender.
+        address depositor = makeAddr('depositor');
+        token.mint(depositor, 100e6);
+        vm.deal(depositor, 1 ether);
+
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(50e6);
+
+        vm.startPrank(depositor);
+        token.approve(address(entrypoint), p.amountLD);
+        entrypoint.deposit{ value: NATIVE_FEE }(p);
+        vm.stopPrank();
+
+        // Decode the built composeMsg and assert its sourceSender field.
+        (
+            uint256 chainId,
+            bytes32 sourceSender,
+            uint256 destChainId,
+            string memory destAddr,
+            bytes memory settlementData,
+            uint256 ecv
+        ) = abi.decode(oft.lastComposeMsg(), (uint256, bytes32, uint256, string, bytes, uint256));
+
+        assertEq(chainId,      block.chainid,                          'composeMsg[0] == block.chainid');
+        assertEq(sourceSender, bytes32(uint256(uint160(depositor))),   'sourceSender == depositor (authenticated)');
+        assertEq(destChainId,  DEST_CHAIN_ID,                          'destChainId passthrough');
+        assertEq(destAddr,     DEST_ADDR,                              'destAddr passthrough');
+        assertEq(settlementData, abi.encode(RGB_OP_ID),                'settlementData passthrough');
+        assertEq(ecv,          0,                                      'expectedComposeValue passthrough');
+    }
+
+    /// @dev A malformed `payload` (cannot decode as (uint256, string, bytes))
     ///      must revert on the source chain, before the OFT pulls tokens or the
     ///      caller pays an LZ fee — preventing un-decodable composeMsgs from
     ///      ever being delivered to `UtexoLZAdapter.lzCompose`.
@@ -409,7 +450,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     10e6,
             minAmountLD:  10e6,
             extraOptions: hex'0003',
-            payload:      hex'01020304', // 4 bytes — too short to decode four dynamic fields
+            payload:      hex'01020304', // 4 bytes — too short to decode the tuple
             refundTo: address(0),
             expectedComposeValue: 0
         });
@@ -436,7 +477,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     10e6,
             minAmountLD:  10e6,
             extraOptions: hex'0003',
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(cap + 1)),
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, new bytes(cap + 1)),
             refundTo: address(0),
             expectedComposeValue: 0
         });
@@ -459,7 +500,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     10e6,
             minAmountLD:  10e6,
             extraOptions: hex'0003',
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(entrypoint.MAX_SETTLEMENT_DATA_LENGTH())),
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, new bytes(entrypoint.MAX_SETTLEMENT_DATA_LENGTH())),
             refundTo: address(0),
             expectedComposeValue: 0
         });
@@ -480,7 +521,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     10e6,
             minAmountLD:  10e6,
             extraOptions: hex'0003',
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, new bytes(cap + 1)),
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, new bytes(cap + 1)),
             refundTo: address(0),
             expectedComposeValue: 0
         });
@@ -499,7 +540,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     10e6,
             minAmountLD:  10e6,
             extraOptions: hex'0003',
-            payload:      abi.encode(DEST_CHAIN_ID, string(new bytes(cap + 1)), OPERATION_ID, EMPTY_SETTLEMENT_DATA),
+            payload:      abi.encode(DEST_CHAIN_ID, string(new bytes(cap + 1)), EMPTY_SETTLEMENT_DATA),
             refundTo:     address(0),
             expectedComposeValue: 0
         });
@@ -522,7 +563,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     10e6,
             minAmountLD:  10e6,
             extraOptions: hex'0003',
-            payload:      abi.encode(DEST_CHAIN_ID, string(new bytes(entrypoint.MAX_DESTINATION_ADDRESS_LENGTH())), OPERATION_ID, EMPTY_SETTLEMENT_DATA),
+            payload:      abi.encode(DEST_CHAIN_ID, string(new bytes(entrypoint.MAX_DESTINATION_ADDRESS_LENGTH())), EMPTY_SETTLEMENT_DATA),
             refundTo:     address(0),
             expectedComposeValue: 0
         });
@@ -542,7 +583,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     10e6,
             minAmountLD:  10e6,
             extraOptions: hex'0003',
-            payload:      abi.encode(DEST_CHAIN_ID, string(new bytes(cap + 1)), OPERATION_ID, EMPTY_SETTLEMENT_DATA),
+            payload:      abi.encode(DEST_CHAIN_ID, string(new bytes(cap + 1)), EMPTY_SETTLEMENT_DATA),
             refundTo:     address(0),
             expectedComposeValue: 0
         });
@@ -702,7 +743,8 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD:     amount,
             minAmountLD:  amount,
             extraOptions: hex'0003',                 // arbitrary non-empty
-            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, OPERATION_ID, EMPTY_SETTLEMENT_DATA),
+            // RGB route: the RGB OpId travels inside settlementData.
+            payload:      abi.encode(DEST_CHAIN_ID, DEST_ADDR, abi.encode(RGB_OP_ID)),
             refundTo: address(0),
             expectedComposeValue: 0
         });
