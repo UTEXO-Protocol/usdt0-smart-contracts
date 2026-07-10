@@ -34,17 +34,20 @@ import { IUtexoSourceEntrypoint } from './interfaces/IUtexoSourceEntrypoint.sol'
 ///       • `dstEid` and `lzAdapter` are fixed at construction and cannot be
 ///         re-pointed at a different destination by the caller or anyone else.
 ///       • `composeMsg` is built by the entrypoint as
-///         `abi.encode(block.chainid, destinationChainId, destinationAddress, operationId, settlementData)`,
-///         where the destination fields and `settlementData` are extracted from
-///         the caller-supplied `payload` blob via `abi.decode`. All chain
+///         `abi.encode(block.chainid, sourceSender, destinationChainId, destinationAddress, settlementData, expectedComposeValue)`,
+///         where `sourceSender` is `msg.sender` left-padded to `bytes32` and the
+///         destination fields + `settlementData` are extracted from the
+///         caller-supplied `payload` blob via `abi.decode`. All chain
 ///         identifiers are `uint256` (real `block.chainid` for EVM endpoints,
-///         backend-assigned ids above the EVM range). `settlementData` is an opaque blob whose layout
-///         is dictated by the destination route's `SettlementModule` on
-///         Arbitrum — the entrypoint plumbs it through unchanged. For routes
-///         registered with `NullSettlementModule` (the default for LZ-adapter
-///         flows) it is empty (`""`). A malformed `payload` reverts here on the
-///         source chain so no LZ fee is ever paid for an un-decodable compose,
-///         and the `sourceChainId` part is non-spoofable.
+///         backend-assigned ids above the EVM range). `settlementData` is an
+///         opaque blob whose layout is dictated by the destination route's
+///         `SettlementModule` on Arbitrum (for the RGB route it carries the RGB
+///         OpId as `abi.encode(uint256)`) — the entrypoint plumbs it through
+///         unchanged. A malformed `payload` reverts here on the source chain so
+///         no LZ fee is ever paid for an un-decodable compose. Both
+///         `sourceChainId` and `sourceSender` are stamped by the entrypoint and
+///         so are non-spoofable; Bridge folds `sourceSender` into the derived
+///         `operationId`.
 ///       • LayerZero fee is re-quoted on-chain; surplus `msg.value` is refunded to
 ///         `msg.sender`.
 contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable, ReentrancyGuard {
@@ -61,8 +64,17 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     ///         an honest deposit from ever encoding an oversized blob into the
     ///         LayerZero `composeMsg`, which the destination adapter would then
     ///         have to bound (or strand) on the failure path. 1024 bytes is ample
-    ///         for the empty `NullSettlementModule` blob used by LZ routes.
+    ///         for the RGB route's 32-byte `abi.encode(uint256 rgbOpId)` blob (or
+    ///         empty for routes needing none).
     uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 1024;
+
+    /// @notice Upper bound on the `destinationAddress` byte length, mirroring
+    ///         `UtexoLZAdapter.MAX_DESTINATION_ADDRESS_LENGTH` and the Bridge's
+    ///         `MAX_ADDRESS_LENGTH`. Capping it here keeps an honest deposit from
+    ///         encoding an oversized address into the LayerZero `composeMsg` that
+    ///         the destination would only reject (after fees are paid on two
+    ///         chains). 512 bytes covers every supported destination format.
+    uint256 public constant MAX_DESTINATION_ADDRESS_LENGTH = 512;
 
     // =========================================================================
     // Immutables
@@ -139,22 +151,28 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         (
             uint256 destinationChainId,
             string memory destinationAddress,
-            uint256 operationId,
             bytes memory settlementData
-        ) = abi.decode(depositParams.payload, (uint256, string, uint256, bytes));
+        ) = abi.decode(depositParams.payload, (uint256, string, bytes));
 
-        // Bound the opaque blob at the source so an oversized settlementData
-        // can never enter the cross-chain composeMsg.
+        // Bound the decoded inputs at the source so oversized values can never
+        // enter the cross-chain composeMsg.
         if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
             revert SettlementDataTooLong(settlementData.length, MAX_SETTLEMENT_DATA_LENGTH);
         }
+        if (bytes(destinationAddress).length > MAX_DESTINATION_ADDRESS_LENGTH) {
+            revert DestinationAddressTooLong(bytes(destinationAddress).length, MAX_DESTINATION_ADDRESS_LENGTH);
+        }
 
+        // Stamp the authenticated source sender (the real depositor) into the
+        // composeMsg. Bridge folds it into the derived operationId; a caller
+        // cannot spoof it because it is `msg.sender`, not a payload field.
         bytes memory composeMsg = abi.encode(
             block.chainid,
+            bytes32(uint256(uint160(msg.sender))),
             destinationChainId,
             destinationAddress,
-            operationId,
-            settlementData
+            settlementData,
+            depositParams.expectedComposeValue
         );
 
         // 3. Build the LayerZero send parameters. `dstEid` and `to` are immutable
@@ -177,17 +195,24 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             revert InsufficientNativeFee({ provided: msg.value, required: fee.nativeFee });
         }
 
-        // 5. Forward exactly `fee.nativeFee` to the OFT; refund surplus ourselves.
-        //    Using `msg.sender` as `refundAddress` is defensive only: with this call
-        //    shape the OFT has no surplus to refund.
+        // 5. Resolve the native-refund target. A contract caller that cannot
+        //    receive native would otherwise have its deposit bricked on the
+        //    surplus refund, so the caller may name an explicit recipient.
+        address refundTo = depositParams.refundTo == address(0)
+            ? msg.sender
+            : depositParams.refundTo;
+
+        // 6. Forward exactly `fee.nativeFee` to the OFT; refund surplus ourselves.
+        //    `refundTo` is passed as the OFT `refundAddress` too, though with this
+        //    call shape the OFT has no surplus to refund.
         (MessagingReceipt memory receipt, ) =
-            IOFT(oft).send{ value: fee.nativeFee }(sp, fee, msg.sender);
+            IOFT(oft).send{ value: fee.nativeFee }(sp, fee, refundTo);
         guid = receipt.guid;
 
-        // 6. Refund the user's native surplus (msg.value - nativeFee).
+        // 7. Refund the native surplus (msg.value - nativeFee) to `refundTo`.
         uint256 excess = msg.value - fee.nativeFee;
         if (excess != 0) {
-            (bool ok, ) = msg.sender.call{ value: excess }('');
+            (bool ok, ) = refundTo.call{ value: excess }('');
             if (!ok) revert NativeRefundFailed();
         }
 
@@ -198,7 +223,6 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             block.chainid,
             destinationChainId,
             destinationAddress,
-            operationId,
             settlementData
         );
     }
@@ -215,22 +239,27 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         (
             uint256 destinationChainId,
             string memory destinationAddress,
-            uint256 operationId,
             bytes memory settlementData
-        ) = abi.decode(depositParams.payload, (uint256, string, uint256, bytes));
+        ) = abi.decode(depositParams.payload, (uint256, string, bytes));
 
-        // Same cap as `deposit` so the quote reverts on exactly the inputs the
+        // Same caps as `deposit` so the quote reverts on exactly the inputs the
         // send would reject.
         if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
             revert SettlementDataTooLong(settlementData.length, MAX_SETTLEMENT_DATA_LENGTH);
         }
+        if (bytes(destinationAddress).length > MAX_DESTINATION_ADDRESS_LENGTH) {
+            revert DestinationAddressTooLong(bytes(destinationAddress).length, MAX_DESTINATION_ADDRESS_LENGTH);
+        }
 
+        // Mirror `deposit`'s composeMsg shape (size drives the fee; the
+        // sourceSender value does not affect the quote).
         bytes memory composeMsg = abi.encode(
             block.chainid,
+            bytes32(uint256(uint160(msg.sender))),
             destinationChainId,
             destinationAddress,
-            operationId,
-            settlementData
+            settlementData,
+            depositParams.expectedComposeValue
         );
         SendParam memory sp = SendParam({
             dstEid:       dstEid,
