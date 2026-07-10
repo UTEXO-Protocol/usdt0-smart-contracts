@@ -6,8 +6,8 @@ import { UtexoSourceEntrypoint } from '../../src/UtexoSourceEntrypoint.sol';
 
 /// @title DeployUtexoSourceEntrypoint
 /// @notice Deploys `UtexoSourceEntrypoint` on a source chain (Ethereum, OP, Base, …).
-///         The contract is stateless and non-upgradeable — all parameters are immutable.
-///         To update any parameter, redeploy and point the frontend to the new address.
+///         The contract is non-upgradeable and has owner-controlled emergency pause.
+///         To update a routing parameter, redeploy and point the frontend to the new address.
 ///
 /// Env:
 ///   PRIVATE_KEY          — deployer private key
@@ -19,6 +19,7 @@ import { UtexoSourceEntrypoint } from '../../src/UtexoSourceEntrypoint.sol';
 ///   LZ_ADAPTER           — UtexoLZAdapter address on the destination chain,
 ///                          left-padded to 32 bytes (bytes32)
 ///                          e.g. 0x000000000000000000000000<UtexoLZAdapter address>
+///   OWNER_ADDRESS        — initial owner of the entrypoint
 ///
 /// Usage:
 ///   forge script script/deploy/DeployUtexoSourceEntrypoint.s.sol \
@@ -30,15 +31,17 @@ contract DeployUtexoSourceEntrypoint is Script {
         address oft        = vm.envAddress('OFT_ADDRESS');
         uint32  dstEid     = uint32(vm.envUint('DST_EID'));
         bytes32 lzAdapter  = vm.envBytes32('LZ_ADAPTER');
+        address owner      = vm.envAddress('OWNER_ADDRESS');
 
         vm.startBroadcast(pk);
-        entrypoint = new UtexoSourceEntrypoint(token, oft, dstEid, lzAdapter);
+        entrypoint = new UtexoSourceEntrypoint(token, oft, dstEid, lzAdapter, owner);
         vm.stopBroadcast();
 
         console2.log('UtexoSourceEntrypoint deployed at:', address(entrypoint));
         console2.log('Token:     ', entrypoint.token());
         console2.log('OFT:       ', entrypoint.oft());
         console2.log('DstEid:    ', entrypoint.dstEid());
+        console2.log('Owner:     ', entrypoint.owner());
         console2.log('LZAdapter: ');
         console2.logBytes32(entrypoint.lzAdapter());
     }
