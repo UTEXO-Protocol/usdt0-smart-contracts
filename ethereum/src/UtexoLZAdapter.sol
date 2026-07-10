@@ -67,10 +67,20 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     ///         `_stuckFunds[guid]` storage. An unbounded blob
     ///         from a buggy/compromised entrypoint could make the catch-branch
     ///         storage write exhaust the LayerZero Executor gas budget. LZ-adapter
-    ///         routes use `NullSettlementModule` (empty blob), so 1024 bytes is
-    ///         ample headroom. The same cap is mirrored on the source-chain
-    ///         `UtexoSourceEntrypoint`.
+    ///         routes carry only a small blob (the RGB route's `abi.encode(uint256
+    ///         rgbOpId)` is 32 bytes; empty for routes needing none), so 1024
+    ///         bytes is ample headroom. The same cap is mirrored on the
+    ///         source-chain `UtexoSourceEntrypoint`.
     uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 1024;
+
+    /// @notice Upper bound on the inbound `destinationAddress` byte length.
+    ///         It is forwarded into `Bridge.fundsIn` (which itself caps at
+    ///         `MAX_ADDRESS_LENGTH = 512`), re-emitted in `ComposeFundsIn`, and
+    ///         written to `_stuckFunds[guid]` on the failure path. Bounding it
+    ///         here keeps the cap aligned with the Bridge and the source-chain
+    ///         `UtexoSourceEntrypoint`, and stops an oversized value from
+    ///         inflating event logs or stuck-funds storage.
+    uint256 public constant MAX_DESTINATION_ADDRESS_LENGTH = 512;
 
     // =========================================================================
     // Immutables
@@ -211,82 +221,116 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             revert UntrustedComposeSource(srcEid_, composeFrom_);
         }
 
-        // 2. Decode the LayerZero compose data.
+        // 2. Decode the LayerZero transport envelope (always well-formed).
         uint256 amountLD     = OFTComposeMsgCodec.amountLD(_message);
         bytes memory payload = OFTComposeMsgCodec.composeMsg(_message);
 
-        // 3. Decode the business payload. `sourceChainId` is the EVM chain id the
-        //    source `UtexoSourceEntrypoint` captured from `block.chainid` at
-        //    deposit time, but it is self-declared in the payload — it is only
-        //    trustworthy once step 3a cross-checks it against the transport
-        //    `srcEid`. `settlementData` is an opaque blob whose layout is dictated
-        //    by the destination route's `SettlementModule` on Arbitrum; the
-        //    adapter plumbs it through unchanged. For routes registered with
-        //    `NullSettlementModule` (the default for LZ-adapter inbound flows) it
-        //    is empty.
-        (
+        // 3. Decode the business payload behind an external self-call so a
+        //    malformed payload (from a buggy or compromised trusted entrypoint)
+        //    is caught and parked as a recoverable record — instead of reverting
+        //    before any `_stuckFunds` anchor exists, which would strand the
+        //    OFT-credited USDT0. A bare `abi.decode` cannot be wrapped in
+        //    try/catch, hence the external `decodeComposeMsg` helper.
+        try this.decodeComposeMsg(payload) returns (
             uint256 sourceChainId,
+            bytes32 sourceSender,
             uint256 destinationChainId,
             string memory destinationAddress,
-            uint256 operationId,
-            bytes memory settlementData
-        ) = abi.decode(payload, (uint256, uint256, string, uint256, bytes));
+            bytes memory settlementData,
+            uint256 expectedComposeValue
+        ) {
+            _composeIn(
+                _guid, srcEid_, amountLD, sourceChainId, sourceSender, destinationChainId,
+                destinationAddress, settlementData, expectedComposeValue
+            );
+        } catch {
+            _parkUndecodableCompose(_guid, amountLD);
+        }
+    }
 
-        // 3a. Bound the opaque `settlementData` before it is plumbed onward or,
-        //     on the failure path, written to `_stuckFunds[guid]` storage.
+    /// @notice External pure decoder that exists only so `lzCompose` can wrap the
+    ///         business-payload `abi.decode` in try/catch (a bare `abi.decode`
+    ///         is not catchable). Reverts on a malformed payload; the caller
+    ///         turns that revert into a recoverable `_stuckFunds` record.
+    function decodeComposeMsg(bytes calldata payload)
+        external
+        pure
+        returns (
+            uint256 sourceChainId,
+            bytes32 sourceSender,
+            uint256 destinationChainId,
+            string  memory destinationAddress,
+            bytes   memory settlementData,
+            uint256 expectedComposeValue
+        )
+    {
+        return abi.decode(payload, (uint256, bytes32, uint256, string, bytes, uint256));
+    }
+
+    /// @dev Validate the decoded compose fields, forward into `Bridge.fundsIn`,
+    ///      and — if the Bridge rejects the call — park a full recoverable record
+    ///      under `_stuckFunds[guid]`. Input-validation failures (caps, srcEid,
+    ///      native value) revert so LayerZero can retry; only a Bridge revert
+    ///      parks. Reached only after a successful payload decode.
+    function _composeIn(
+        bytes32 guid,
+        uint32  srcEid_,
+        uint256 amountLD,
+        uint256 sourceChainId,
+        bytes32 sourceSender,
+        uint256 destinationChainId,
+        string  memory destinationAddress,
+        bytes   memory settlementData,
+        uint256 expectedComposeValue
+    ) private {
+        // Bound the decoded inputs before they are plumbed onward / stored.
         if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
             revert SettlementDataTooLong(settlementData.length, MAX_SETTLEMENT_DATA_LENGTH);
         }
-
-        // 3b. Bind the self-declared `sourceChainId` to the transport origin: the
-        //     trusted entrypoint for this `srcEid` may only speak for the chain id
-        //     registered to it. This turns `sourceChainId` — which drives route
-        //     and commission selection downstream — from a self-asserted field
-        //     into one corroborated by the LayerZero transport.
+        if (bytes(destinationAddress).length > MAX_DESTINATION_ADDRESS_LENGTH) {
+            revert DestinationAddressTooLong(bytes(destinationAddress).length, MAX_DESTINATION_ADDRESS_LENGTH);
+        }
+        // Bind the self-declared `sourceChainId` to the transport origin.
         if (eidToChainId[srcEid_] != sourceChainId) {
             revert SourceChainIdMismatch(srcEid_, sourceChainId);
         }
+        // Anti-grief: the forwarded native value must equal the drop the
+        // depositor budgeted (bound in `composeMsg`). A wrong `msg.value` reverts
+        // so LayerZero retries with the funded value rather than parking.
+        if (msg.value != expectedComposeValue) {
+            revert ComposeValueMismatch(msg.value, expectedComposeValue);
+        }
 
-        // 4. Approve Bridge to pull the USDT0 we just received via lzReceive.
+        // Approve Bridge to pull the USDT0 credited by `OFT._lzReceive`, then
+        // forward. If the Bridge rejects the call (paused, route disabled,
+        // settlement/native-value mismatch, …) the funds are parked and
+        // recoverable off the hot path.
         IERC20(token).safeIncreaseAllowance(bridge, amountLD);
 
-        // 5. Forward the call. `msg.value` here is the value the LayerZero
-        //    Executor forwarded into this lzCompose, sized off-chain by the
-        //    backend to match the route's NATIVE commission (or 0 for
-        //    TOKEN-currency routes). Calls the adapter-only `fundsIn` overload
-        //    (6-arg, `onlyLZAdapter`-gated) so the non-spoofable
-        //    `sourceChainId` reaches commission routing and `settlementData`
-        //    reaches the route's `SettlementModule.onFundsIn`. If Bridge
-        //    rejects the call (paused, route disabled, settlement module
-        //    rejects, native-value mismatch, …) the funds are parked in
-        //    `_stuckFunds[_guid]` and recoverable off the hot path.
         try IBridge(bridge).fundsIn{ value: msg.value }(
             amountLD,
             sourceChainId,
+            sourceSender,
             destinationChainId,
             destinationAddress,
-            operationId,
             settlementData
-        ) {
+        ) returns (bytes32 operationId) {
             emit ComposeFundsIn(
-                _guid, sourceChainId, amountLD,
-                destinationChainId, destinationAddress, operationId, settlementData
+                guid, operationId, sourceSender, sourceChainId, amountLD,
+                destinationChainId, destinationAddress, settlementData
             );
         } catch (bytes memory reason) {
             // Bridge did not pull the approved allowance — reset it so the
             // unconsumed approval cannot accumulate across repeated failures.
             IERC20(token).forceApprove(bridge, 0);
 
-            // Never overwrite an existing parked record. LayerZero guids are
-            // unique per packet, so a second failed compose under the same
-            // `_guid` is not expected; if it ever happens, preserve the
-            // original (recoverable) record instead of clobbering it.
-            if (_stuckFunds[_guid].amountLD != 0) revert StuckFundsAlreadyExist(_guid);
+            // Never overwrite an existing parked record (unique-guid guard).
+            if (_stuckFunds[guid].amountLD != 0) revert StuckFundsAlreadyExist(guid);
 
-            _stuckFunds[_guid] = StuckFunds({
+            _stuckFunds[guid] = StuckFunds({
                 amountLD:           amountLD,
                 nativeValue:        msg.value,
-                operationId:        operationId,
+                sourceSender:       sourceSender,
                 sourceChainId:      sourceChainId,
                 destinationChainId: destinationChainId,
                 destinationAddress: destinationAddress,
@@ -294,10 +338,26 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             });
 
             emit ComposeFundsInFailed(
-                _guid, sourceChainId, amountLD, msg.value,
-                destinationChainId, destinationAddress, operationId, settlementData, reason
+                guid, sourceSender, sourceChainId, amountLD, msg.value,
+                destinationChainId, destinationAddress, settlementData, reason
             );
         }
+    }
+
+    /// @dev A malformed compose payload cannot be decoded, so no business fields
+    ///      are known. Record only the OFT-credited `amountLD` and the forwarded
+    ///      native — enough for `refundStuckFunds` to release both. The remaining
+    ///      fields stay at their zero/empty storage defaults.
+    function _parkUndecodableCompose(bytes32 guid, uint256 amountLD) private {
+        StuckFunds storage record = _stuckFunds[guid];
+        if (record.amountLD != 0) revert StuckFundsAlreadyExist(guid);
+
+        record.amountLD    = amountLD;
+        record.nativeValue = msg.value;
+
+        emit ComposeFundsInFailed(
+            guid, bytes32(0), 0, amountLD, msg.value, 0, '', '', bytes('malformed compose payload')
+        );
     }
 
     // =========================================================================
