@@ -22,15 +22,23 @@ contract MockBridge {
     /// Force `fundsIn` to revert — used by failure-path tests.
     bool public reverts;
 
+    /// @notice When non-zero, `fundsIn` returns this fixed operationId so tests
+    ///         can assert the value the adapter surfaces on `ComposeFundsIn`.
+    ///         Otherwise `fundsIn` returns a deterministic keccak derivation.
+    bytes32 public operationIdToReturn;
+
     // Last-call recording -----------------------------------------------------
     uint256 public lastAmount;
     uint256 public lastSourceChainId;
     uint256 public lastDestinationChainId;
     string  public lastDestinationAddress;
-    uint256 public lastOperationId;
+    bytes32 public lastSourceSender;
     bytes   public lastSettlementData;
     uint256 public lastMsgValue;
     address public lastCaller;
+
+    /// @notice The operationId the last `fundsIn` call returned — assertable by tests.
+    bytes32 public lastReturnedOperationId;
 
     constructor(address token_) {
         token = token_;
@@ -40,30 +48,40 @@ contract MockBridge {
         reverts = v;
     }
 
+    function setOperationIdToReturn(bytes32 v) external {
+        operationIdToReturn = v;
+    }
+
     /// @notice Mirrors the adapter-only overload
     ///         `Bridge.fundsIn(uint256 amount, uint256 sourceChainId,
-    ///                         uint256 destinationChainId, string destinationAddress,
-    ///                         uint256 operationId, bytes settlementData)`.
+    ///                         bytes32 sourceSender, uint256 destinationChainId,
+    ///                         string destinationAddress, bytes settlementData)
+    ///                         returns (bytes32 operationId)`.
     function fundsIn(
         uint256 amount,
         uint256 sourceChainId,
+        bytes32 sourceSender,
         uint256 destinationChainId,
         string  calldata destinationAddress,
-        uint256 operationId,
         bytes   calldata settlementData
-    ) external payable {
+    ) external payable returns (bytes32 operationId) {
         require(!reverts, 'MockBridge: forced revert');
 
         IERC20(token).transferFrom(msg.sender, address(this), amount);
 
         lastAmount             = amount;
         lastSourceChainId      = sourceChainId;
+        lastSourceSender       = sourceSender;
         lastDestinationChainId = destinationChainId;
         lastDestinationAddress = destinationAddress;
-        lastOperationId        = operationId;
         lastSettlementData     = settlementData;
         lastMsgValue           = msg.value;
         lastCaller             = msg.sender;
+
+        operationId = operationIdToReturn != bytes32(0)
+            ? operationIdToReturn
+            : keccak256(abi.encode(sourceChainId, sourceSender, amount, destinationChainId, destinationAddress, settlementData));
+        lastReturnedOperationId = operationId;
     }
 
     receive() external payable {}
