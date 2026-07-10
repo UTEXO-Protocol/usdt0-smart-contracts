@@ -15,7 +15,7 @@ contracts/
     └── MockOFT.sol
 ```
 
-`UtexoSourceEntrypoint` constructor takes four immutables — exact same semantics as on EVM source chains:
+`UtexoSourceEntrypoint` constructor takes four routing parameters plus an initial owner — exact same semantics as on EVM source chains:
 
 | Param | Description |
 |---|---|
@@ -23,6 +23,12 @@ contracts/
 | `oft` | USDT0 OFT on Tron (mainnet: `TFG4wBaDQ8sHWWP1ACeSGnoNR6RRzevLPt`) |
 | `dstEid` | LayerZero V2 destination endpoint id (Arbitrum: `30110`) |
 | `lzAdapter` | `UtexoLZAdapter` on Arbitrum, encoded as `bytes32` |
+| `initialOwner` | Initial owner of the entrypoint; use the operational multisig in production |
+
+The configured initial owner can differ from the deployer and can pause or resume deposits. Ownership
+transfers use OpenZeppelin's two-step flow, so the pending owner must call
+`acceptOwnership()`. Ownership renunciation is disabled to ensure the emergency
+pause controls always remain recoverable.
 
 ## Toolchain
 
@@ -83,22 +89,26 @@ npx tronbox migrate --network shasta \
   --token=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t \
   --oft=TFG4wBaDQ8sHWWP1ACeSGnoNR6RRzevLPt \
   --dst-eid=30110 \
-  --lz-adapter=0x0000000000000000000000001234567890abcdef1234567890abcdef12345678
+  --lz-adapter=0x0000000000000000000000001234567890abcdef1234567890abcdef12345678 \
+  --owner=<initial-owner-address>
 ```
 
 Notes on the flags:
 
 - `--token` and `--oft` accept Tron `T...` base58 form (TronBox / TronWeb auto-convert internally).
 - `--lz-adapter` is the **destination-chain** `UtexoLZAdapter` address. Pass the full `bytes32` form (`0x` + 64 hex chars) — i.e. the 20-byte EVM address left-padded with 12 zero bytes.
+- `--owner` is independent from the deployer; use the operational multisig address in production.
 
 The `development` network is intentionally skipped by the migration — that path is owned by the test suite.
 
 ## Post-deployment checklist
 
 1. **Verify immutables** via Tronscan or `tronWeb.contract(abi, addr).method().call()`: `token`, `oft`, `dstEid`, `lzAdapter` match what you passed.
-2. **Federation registration on Arbitrum** — the deployed entrypoint must be added to the trusted set on the destination chain. The value federation passes into `LZAdapter.setTrustedEntrypoint(bytes32, true)` is the Tron entrypoint's 20-byte EVM address left-padded to `bytes32` (i.e. `tronWeb.address.toHex(entrypointBase58).replace(/^41/, '')` left-padded). This goes through `MultisigProxy.proposeAdminExecuteAdapter` → timelock → `executeProposal`.
-3. **Backend updates** — the Utexo backend must add the Tron `block.chainid` to its `CommissionManager` route keys on Arbitrum so commissions are quoted correctly for Tron→destination deposits.
-4. **Smoke test** with a small `deposit()` on Shasta/Nile before exercising mainnet flow.
+2. **Verify emergency controls** — check that `owner()` is the expected account and `paused()` is `false`.
+3. **Rotate ownership if needed** — call `transferOwnership(newOwner)`, then have the pending owner call `acceptOwnership()`.
+4. **Federation registration on Arbitrum** — the deployed entrypoint must be added to the trusted set on the destination chain. The value federation passes into `LZAdapter.setTrustedEntrypoint(bytes32, true)` is the Tron entrypoint's 20-byte EVM address left-padded to `bytes32` (i.e. `tronWeb.address.toHex(entrypointBase58).replace(/^41/, '')` left-padded). This goes through `MultisigProxy.proposeAdminExecuteAdapter` → timelock → `executeProposal`.
+5. **Backend updates** — the Utexo backend must add the Tron `block.chainid` to its `CommissionManager` route keys on Arbitrum so commissions are quoted correctly for Tron→destination deposits.
+6. **Smoke test** with a small `deposit()` on Shasta/Nile before exercising mainnet flow.
 
 ## Project structure
 
