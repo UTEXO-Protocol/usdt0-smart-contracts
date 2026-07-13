@@ -22,10 +22,10 @@ contract MockBridge {
     /// Force `fundsIn` to revert — used by failure-path tests.
     bool public reverts;
 
-    /// @notice When non-zero, `fundsIn` returns this fixed operationId so tests
-    ///         can assert the value the adapter surfaces on `ComposeFundsIn`.
-    ///         Otherwise `fundsIn` returns a deterministic keccak derivation.
-    bytes32 public operationIdToReturn;
+    /// Optional exact native value expectation — used to model Bridge native
+    /// commission mismatch without pulling in the real Bridge dependency.
+    bool public checksMsgValue;
+    uint256 public expectedMsgValue;
 
     // Last-call recording -----------------------------------------------------
     uint256 public lastAmount;
@@ -48,8 +48,9 @@ contract MockBridge {
         reverts = v;
     }
 
-    function setOperationIdToReturn(bytes32 v) external {
-        operationIdToReturn = v;
+    function setExpectedMsgValue(uint256 expected) external {
+        checksMsgValue  = true;
+        expectedMsgValue = expected;
     }
 
     /// @notice Mirrors the adapter-only overload
@@ -66,6 +67,7 @@ contract MockBridge {
         bytes   calldata settlementData
     ) external payable returns (bytes32 operationId) {
         require(!reverts, 'MockBridge: forced revert');
+        require(!checksMsgValue || msg.value == expectedMsgValue, 'MockBridge: native value mismatch');
 
         IERC20(token).transferFrom(msg.sender, address(this), amount);
 

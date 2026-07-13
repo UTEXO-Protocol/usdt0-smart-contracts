@@ -1,6 +1,8 @@
 require('dotenv').config();
 
 const port = process.env.HOST_PORT || 9095;
+const treDefaultPrivateKey =
+  'da146374a75310b9666e834ee4ad0866d6f4035967bfc76217c5a495fff9f0d0';
 
 module.exports = {
   networks: {
@@ -26,7 +28,7 @@ module.exports = {
       network_id: '3'
     },
     development: {
-      privateKey: '0000000000000000000000000000000000000000000000000000000000000001',
+      privateKey: process.env.PRIVATE_KEY_DEVELOPMENT || treDefaultPrivateKey,
       userFeePercentage: 0,
       feeLimit: 1000 * 1e6,
       fullHost: `http://127.0.0.1:${port}`,
