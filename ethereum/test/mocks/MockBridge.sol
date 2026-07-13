@@ -27,6 +27,11 @@ contract MockBridge {
     bool public checksMsgValue;
     uint256 public expectedMsgValue;
 
+    /// @notice When non-zero, `fundsIn` returns this fixed operationId so tests
+    ///         can assert the value the adapter surfaces on `ComposeFundsIn`.
+    ///         Otherwise `fundsIn` returns a deterministic keccak derivation.
+    bytes32 public operationIdToReturn;
+
     // Last-call recording -----------------------------------------------------
     uint256 public lastAmount;
     uint256 public lastSourceChainId;
@@ -51,6 +56,10 @@ contract MockBridge {
     function setExpectedMsgValue(uint256 expected) external {
         checksMsgValue  = true;
         expectedMsgValue = expected;
+    }
+
+    function setOperationIdToReturn(bytes32 v) external {
+        operationIdToReturn = v;
     }
 
     /// @notice Mirrors the adapter-only overload

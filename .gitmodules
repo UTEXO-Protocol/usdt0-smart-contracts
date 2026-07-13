@@ -10,4 +10,4 @@
 [submodule "lib/bridge-smart-contracts"]
 	path = lib/bridge-smart-contracts
 	url = https://github.com/UTEXO-Protocol/bridge-smart-contracts.git
-	branch = fix-R-W-08-predictable-opId
+	branch = integration/audit-fixes-into-dev
