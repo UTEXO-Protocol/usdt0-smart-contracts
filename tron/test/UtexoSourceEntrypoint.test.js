@@ -182,7 +182,7 @@ const RGB_SETTLEMENT_DATA = tronWeb.utils.abi.encodeParams(
  * registered with `NullSettlementModule` on Arbitrum, the blob is always empty.
  * Non-empty values are exercised by the round-trip test below.
  */
-function encodePayload(destChainId, destAddr, opId, settlementData = DEFAULT_SETTLEMENT_DATA) {
+function encodePayload(destChainId, destAddr, settlementData = DEFAULT_SETTLEMENT_DATA) {
   return tronWeb.utils.abi.encodeParams(
     ['uint256', 'string', 'bytes'],
     [destChainId.toString(), destAddr, settlementData]
@@ -531,7 +531,7 @@ contract('UtexoSourceEntrypoint', () => {
 
       await sendExpectSuccess(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
@@ -570,14 +570,14 @@ contract('UtexoSourceEntrypoint', () => {
       );
     });
 
-    it('builds composeMsg = abi.encode(block.chainid, destChainId, destAddr, opId, settlementData)', async () => {
+    it('builds composeMsg = abi.encode(block.chainid, sourceSender, destChainId, destAddr, settlementData, expectedComposeValue)', async () => {
       await sendExpectSuccess(
         token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
       );
 
       await sendExpectSuccess(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
@@ -588,13 +588,19 @@ contract('UtexoSourceEntrypoint', () => {
         composeMsg
       );
 
+      // The entrypoint stamps the authenticated depositor (msg.sender) into
+      // the composeMsg's second field, left-padded to bytes32 — not taken
+      // from any caller-supplied payload field.
+      const expectedSourceSender = '0x' + '00'.repeat(12) + tronAddrTo20ByteHex(deployerAddr).slice(2);
+
       // decoded[0] is whatever block.chainid the local node reports; we don't
       // pin its value here — just confirm something was prepended.
       assert.isAbove(Number(decoded[0]), 0, 'sourceChainId prepended');
-      assert.equal(decoded[1].toString(), String(DEST_CHAIN_ID), 'destChainId');
-      assert.equal(decoded[2],            DEST_ADDR,              'destAddr');
-      assert.equal(decoded[3].toString(), String(OPERATION_ID),   'operationId');
+      assert.equal(decoded[1].toLowerCase(), expectedSourceSender, 'sourceSender == depositor (authenticated)');
+      assert.equal(decoded[2].toString(), String(DEST_CHAIN_ID), 'destChainId');
+      assert.equal(decoded[3],            DEST_ADDR,              'destAddr');
       assert.equal(decoded[4],            DEFAULT_SETTLEMENT_DATA, 'settlementData forwarded');
+      assert.equal(decoded[5].toString(), '0',                     'expectedComposeValue passthrough');
     });
 
     /// Non-empty `settlementData` must round-trip byte-for-byte through the
@@ -613,7 +619,7 @@ contract('UtexoSourceEntrypoint', () => {
 
       await sendExpectSuccess(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadWithBlob]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadWithBlob, ZERO_ADDR_HEX, 0]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
@@ -641,7 +647,7 @@ contract('UtexoSourceEntrypoint', () => {
 
       await sendExpectSuccess(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, extra, payload]
+          [AMOUNT_LD, AMOUNT_LD, extra, payload, ZERO_ADDR_HEX, 0]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
