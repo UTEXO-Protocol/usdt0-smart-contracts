@@ -25,9 +25,10 @@ const AMOUNT_LD = '100000000';          // 100 USDT (6 decimals), as string
 
 const FEE_LIMIT = 1_000_000_000;        // 1000 TRX cap per call
 
-// Polling settings for revert detection.
+// Polling settings for tx confirmation/revert detection.
+// CI runners can confirm Tron txs noticeably slower than local TRE.
 const POLL_INTERVAL_MS = 500;
-const POLL_TIMEOUT_MS  = 20_000;
+const POLL_TIMEOUT_MS  = 120_000;
 
 // =============================================================================
 // Helpers
