@@ -29,6 +29,8 @@ const FEE_LIMIT = 1_000_000_000;        // 1000 TRX cap per call
 // CI runners can confirm Tron txs noticeably slower than local TRE.
 const POLL_INTERVAL_MS = 500;
 const POLL_TIMEOUT_MS  = 120_000;
+const DEPLOY_RETRIES = 3;
+const DEPLOY_RETRY_DELAY_MS = 1_500;
 
 // =============================================================================
 // Helpers
@@ -40,16 +42,29 @@ const POLL_TIMEOUT_MS  = 120_000;
  * on-chain nonce of the sender.
  */
 async function deploy(artifact, ...parameters) {
-  const instance = await tronWeb.contract().new({
-    abi:               artifact.abi,
-    bytecode:          artifact.bytecode,
-    feeLimit:          FEE_LIMIT,
-    callValue:         0,
-    userFeePercentage: 100,
-    parameters,
-  });
-  await waitForContract(instance.address);
-  return instance;
+  let lastError;
+  for (let attempt = 1; attempt <= DEPLOY_RETRIES; attempt += 1) {
+    try {
+      const instance = await tronWeb.contract().new({
+        abi:               artifact.abi,
+        bytecode:          artifact.bytecode,
+        feeLimit:          FEE_LIMIT,
+        callValue:         0,
+        userFeePercentage: 100,
+        parameters,
+      });
+      await waitForContract(instance.address);
+      return instance;
+    } catch (e) {
+      lastError = e;
+      if (attempt < DEPLOY_RETRIES) {
+        await sleep(DEPLOY_RETRY_DELAY_MS);
+      }
+    }
+  }
+  throw new Error(
+    `deploy: failed after ${DEPLOY_RETRIES} attempts: ${lastError?.message || String(lastError)}`
+  );
 }
 
 async function sleep(ms) {
@@ -58,15 +73,27 @@ async function sleep(ms) {
 
 /** Wait until deployed contract code is available on-chain. */
 async function waitForContract(addrBase58OrHex) {
+  const addressCandidates = [addrBase58OrHex];
+  try {
+    const asHex = tronWeb.address.toHex(addrBase58OrHex);
+    if (asHex && !addressCandidates.includes(asHex)) addressCandidates.push(asHex);
+  } catch (_) {}
+  try {
+    const asBase58 = tronWeb.address.fromHex(addrBase58OrHex);
+    if (asBase58 && !addressCandidates.includes(asBase58)) addressCandidates.push(asBase58);
+  } catch (_) {}
+
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    try {
-      const onchain = await tronWeb.trx.getContract(addrBase58OrHex);
-      if (onchain && onchain.bytecode && onchain.bytecode !== '0x' && onchain.bytecode !== '') {
-        return;
+    for (const addr of addressCandidates) {
+      try {
+        const onchain = await tronWeb.trx.getContract(addr);
+        if (onchain && onchain.bytecode && onchain.bytecode !== '0x' && onchain.bytecode !== '') {
+          return;
+        }
+      } catch (_) {
+        // Keep polling until contract is indexed.
       }
-    } catch (_) {
-      // Keep polling until contract is indexed.
     }
     await sleep(POLL_INTERVAL_MS);
   }
