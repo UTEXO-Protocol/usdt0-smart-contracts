@@ -24,7 +24,6 @@ const RGB_OP_ID      = 42; // RGB OpId, now carried inside settlementData
 const AMOUNT_LD = '100000000';          // 100 USDT (6 decimals), as string
 
 const FEE_LIMIT = 1_000_000_000;        // 1000 TRX cap per call
-const HIGH_FEE_LIMIT = 5_000_000_000;   // 5000 TRX for heavy payload edge-cases
 
 // Polling settings for tx confirmation/revert detection.
 // CI runners can confirm Tron txs noticeably slower than local TRE.
@@ -41,7 +40,7 @@ const POLL_TIMEOUT_MS  = 120_000;
  * on-chain nonce of the sender.
  */
 async function deploy(artifact, ...parameters) {
-  return tronWeb.contract().new({
+  const instance = await tronWeb.contract().new({
     abi:               artifact.abi,
     bytecode:          artifact.bytecode,
     feeLimit:          FEE_LIMIT,
@@ -49,10 +48,29 @@ async function deploy(artifact, ...parameters) {
     userFeePercentage: 100,
     parameters,
   });
+  await waitForContract(instance.address);
+  return instance;
 }
 
 async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Wait until deployed contract code is available on-chain. */
+async function waitForContract(addrBase58OrHex) {
+  const deadline = Date.now() + POLL_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const onchain = await tronWeb.trx.getContract(addrBase58OrHex);
+      if (onchain && onchain.bytecode && onchain.bytecode !== '0x' && onchain.bytecode !== '') {
+        return;
+      }
+    } catch (_) {
+      // Keep polling until contract is indexed.
+    }
+    await sleep(POLL_INTERVAL_MS);
+  }
+  throw new Error(`waitForContract: contract ${addrBase58OrHex} not available within ${POLL_TIMEOUT_MS}ms`);
 }
 
 /**
@@ -677,7 +695,7 @@ contract('UtexoSourceEntrypoint', () => {
       await sendAndConfirm(
         entrypoint.deposit(
           [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadAtCap, ZERO_ADDR_HEX, 0]
-        ).send({ callValue: NATIVE_FEE, feeLimit: HIGH_FEE_LIMIT })
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
       assert.equal(
