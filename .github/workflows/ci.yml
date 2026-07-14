@@ -141,12 +141,9 @@ jobs:
                   key = match.group(1).lower()
 
           if key is None:
-              print("Failed to resolve TRE private key from /config/accounts.json or logs")
-              try:
-                  print(subprocess.check_output(["docker", "logs", "tre"], stderr=subprocess.STDOUT, text=True, errors="replace"))
-              except Exception:
-                  pass
-              sys.exit(1)
+              print("Warning: failed to resolve TRE private key from /config/accounts.json or logs")
+              print("Proceeding with tronbox-config.js fallback PRIVATE_KEY_DEVELOPMENT")
+              sys.exit(0)
 
           github_env = os.environ.get("GITHUB_ENV")
           if not github_env:
