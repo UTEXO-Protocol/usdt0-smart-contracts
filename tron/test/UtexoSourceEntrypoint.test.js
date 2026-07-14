@@ -24,6 +24,7 @@ const RGB_OP_ID      = 42; // RGB OpId, now carried inside settlementData
 const AMOUNT_LD = '100000000';          // 100 USDT (6 decimals), as string
 
 const FEE_LIMIT = 1_000_000_000;        // 1000 TRX cap per call
+const HIGH_FEE_LIMIT = 5_000_000_000;   // 5000 TRX for heavy payload edge-cases
 
 // Polling settings for tx confirmation/revert detection.
 // CI runners can confirm Tron txs noticeably slower than local TRE.
@@ -667,14 +668,16 @@ contract('UtexoSourceEntrypoint', () => {
       const atCap   = '0x' + '00'.repeat(cap);
       const payloadAtCap = encodePayload(DEST_CHAIN_ID, DEST_ADDR, atCap);
 
-      await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
       // A full-cap settlementData makes the OFT store a ~1.2 KB composeMsg. Wait
       // for confirmation before reading balances (the EVM test is vm-synchronous;
       // Tron is not), so the balance read cannot race the deposit tx.
       await sendAndConfirm(
         entrypoint.deposit(
           [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadAtCap, ZERO_ADDR_HEX, 0]
-        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+        ).send({ callValue: NATIVE_FEE, feeLimit: HIGH_FEE_LIMIT })
       );
 
       assert.equal(
