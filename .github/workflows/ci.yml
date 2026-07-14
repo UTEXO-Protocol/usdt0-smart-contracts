@@ -83,7 +83,7 @@ jobs:
         uses: docker/setup-qemu-action@v3
 
       - name: Start TRE container
-        run: docker run --platform linux/arm64 -d --name tre -p 9095:9090 tronbox/tre
+        run: docker run --platform linux/arm64 -d --name tre -p 9095:9090 tronbox/tre ./quickstart v1.0.4 useDefaultPrivateKey=true
 
       - name: Wait for TRE RPC
         run: |
@@ -101,59 +101,6 @@ jobs:
           docker ps -a || true
           docker logs tre || true
           exit 1
-
-      - name: Export TRE development private key
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          import re
-          import subprocess
-          import sys
-
-          key = None
-          # Preferred source: TRE-generated accounts file inside container.
-          try:
-              raw = subprocess.check_output(
-                  ["docker", "exec", "tre", "sh", "-lc", "cat /config/accounts.json"],
-                  stderr=subprocess.STDOUT,
-                  text=True,
-                  errors="replace",
-              )
-              accounts = json.loads(raw)
-              keys = accounts.get("privateKeys", []) if isinstance(accounts, dict) else []
-              if keys and isinstance(keys[0], str) and re.fullmatch(r"[0-9a-fA-F]{64}", keys[0]):
-                  key = keys[0].lower()
-          except Exception:
-              pass
-
-          # Fallback: parse key from logs if accounts.json is unavailable.
-          if key is None:
-              logs = subprocess.check_output(
-                  ["docker", "logs", "tre"],
-                  stderr=subprocess.STDOUT,
-                  text=True,
-                  errors="replace",
-              )
-              logs = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", logs)
-              match = re.search(r"\(0\)\s*([0-9a-fA-F]{64})", logs, flags=re.MULTILINE)
-              if match:
-                  key = match.group(1).lower()
-
-          if key is None:
-              print("Warning: failed to resolve TRE private key from /config/accounts.json or logs")
-              print("Proceeding with tronbox-config.js fallback PRIVATE_KEY_DEVELOPMENT")
-              sys.exit(0)
-
-          github_env = os.environ.get("GITHUB_ENV")
-          if not github_env:
-              print("GITHUB_ENV is not set")
-              sys.exit(1)
-
-          with open(github_env, "a", encoding="utf-8") as f:
-              f.write(f"PRIVATE_KEY_DEVELOPMENT={key}\n")
-          print("Exported PRIVATE_KEY_DEVELOPMENT from TRE logs")
-          PY
 
       - name: Run Tron tests
         run: npx tronbox test --network development
