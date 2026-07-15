@@ -50,7 +50,7 @@ An opaque blob plumbed end-to-end (`deposit` payload → `composeMsg` → `Bridg
 
 ### `UtexoSourceEntrypoint` (`ethereum/src/UtexoSourceEntrypoint.sol`)
 
-Deployed once per source chain. Stateless, non-upgradeable — all routing parameters are immutable:
+Deployed once per source chain. Non-upgradeable — all routing parameters are immutable:
 
 | Immutable | Description |
 |---|---|
@@ -62,7 +62,10 @@ Deployed once per source chain. Stateless, non-upgradeable — all routing param
 Key properties:
 - Re-quotes the LayerZero fee on-chain — protects against stale off-chain quotes.
 - Surplus `msg.value` is refunded to the caller.
-- No owner, no pause, no admin functions. Upgrade = redeploy.
+- The owner can pause and resume deposits; fee quotes remain available while paused.
+- Ownership transfers use a two-step flow: the pending owner must call `acceptOwnership()`.
+- Ownership cannot be renounced, preserving access to the emergency pause controls.
+- Upgrade = redeploy.
 
 ### `UtexoLZAdapter` (`ethereum/src/UtexoLZAdapter.sol`)
 
@@ -149,13 +152,14 @@ Copy `.env.example` to `.env` and fill in the values for whichever script you ar
 | `OFT_ADDRESS` | USDT0 OFT (adapter or native) on this source chain |
 | `DST_EID` | LayerZero endpoint id of the destination chain (Arbitrum One = 30110) |
 | `LZ_ADAPTER` | `UtexoLZAdapter` address on the destination chain, left-padded to `bytes32` |
+| `OWNER_ADDRESS` | Initial owner of the entrypoint; use the operational multisig in production |
 
 ```sh
 forge script script/deploy/DeployUtexoSourceEntrypoint.s.sol \
   --rpc-url $RPC_URL --broadcast --verify
 ```
 
-The entrypoint is stateless — no ownership transfer is needed after deployment.
+The initial owner is configured independently from the deployer through `OWNER_ADDRESS`. For production, set it directly to the operational multisig. Any later rotation uses `transferOwnership(newOwner)` followed by `acceptOwnership()` from the pending owner.
 
 ### `UtexoLZAdapter` (Arbitrum)
 
@@ -179,8 +183,10 @@ The adapter has no owner. Mutable state (`trustedEntrypoints`, stuck-funds map) 
 ### `UtexoSourceEntrypoint`
 
 1. Verify immutables: `token`, `oft`, `dstEid`, `lzAdapter` match expected values.
-2. Call `quote(params)` to confirm the OFT is reachable and returns a non-zero fee.
-3. Do a test `deposit()` with a small amount on testnet to confirm token flow and event emission.
+2. Verify `owner` is the expected account and `paused()` is `false`.
+3. If ownership must be rotated, start the transfer and accept it from the pending owner.
+4. Call `quote(params)` to confirm the OFT is reachable and returns a non-zero fee.
+5. Do a test `deposit()` with a small amount on testnet to confirm token flow and event emission.
 
 ### `UtexoLZAdapter`
 
