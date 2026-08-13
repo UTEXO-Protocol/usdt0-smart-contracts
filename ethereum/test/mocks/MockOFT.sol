@@ -22,6 +22,9 @@ import {
 contract MockOFT is IOFT {
     address public immutable override token;
 
+    /// @notice LayerZero peers configured for route-validation tests.
+    mapping(uint32 eid => bytes32 peer) public peers;
+
     /// Native fee the stub quotes and expects on `send()`.
     uint256 public nativeFeeQuote;
 
@@ -57,6 +60,10 @@ contract MockOFT is IOFT {
 
     function setSendReverts(bool v) external {
         sendReverts = v;
+    }
+
+    function setPeer(uint32 eid, bytes32 peer) external {
+        peers[eid] = peer;
     }
 
     // -- IOFT identity stubs ---------------------------------------------------
