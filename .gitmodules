@@ -10,4 +10,4 @@
 [submodule "lib/bridge-smart-contracts"]
 	path = lib/bridge-smart-contracts
 	url = https://github.com/UTEXO-Protocol/bridge-smart-contracts.git
-	branch = integration/audit-fixes-into-dev
+	branch = base-fee-commission
