@@ -15,6 +15,12 @@ import { MessagingFee, MessagingReceipt }   from '@layerzerolabs/lz-evm-protocol
 import { IUtexoLZAdapter } from './interfaces/IUtexoLZAdapter.sol';
 import { IBridge }         from '@bridge-smart-contracts/interfaces/IBridge.sol';
 
+/// @dev Minimal OApp-core view used to ensure a candidate local OFT is wired to
+///      a remote peer for the EID it is being registered against.
+interface IOftPeerView {
+    function peers(uint32 eid) external view returns (bytes32);
+}
+
 /// @title UtexoLZAdapter
 /// @notice Bidirectional adapter between the Utexo `Bridge` (on Arbitrum) and the
 ///         USDT0 OFT / LayerZero V2 stack. Lives in the USDT0 layer repo so the
@@ -28,7 +34,7 @@ import { IBridge }         from '@bridge-smart-contracts/interfaces/IBridge.sol'
 ///      │                                                                          │
 ///      │  LayerZero ──► UtexoLZAdapter.lzCompose                                  │
 ///      │                  │                                                       │
-///      │                  ├─► validate msg.sender == endpoint, _from == oft       │
+///      │                  ├─► validate endpoint + OFT selected by srcEid         │
 ///      │                  ├─► validate composeFrom == trustedEntrypoints[srcEid]  │
 ///      │                  ├─► decode amountLD + business payload                  │
 ///      │                  ├─► validate eidToChainId[srcEid] == sourceChainId      │
@@ -51,9 +57,10 @@ import { IBridge }         from '@bridge-smart-contracts/interfaces/IBridge.sol'
 ///      │                                       └─► OFT.send(SendParam{...})       │
 ///      └──────────────────────────────────────────────────────────────────────────┘
 ///
-///      All five participating addresses (endpoint, oft, token, bridge, multisigProxy)
-///      are immutable. To repoint any of them — redeploy the adapter and update the
-///      reference via federation governance on `MultisigProxy`.
+///      The endpoint, token, Bridge and MultisigProxy addresses are immutable.
+///      OFTs are selected per LayerZero EID because USDT0's native and legacy
+///      meshes can coexist on the same local chain while serving different
+///      remote chains. OFT routes are governed by `MultisigProxy`.
 contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -90,9 +97,6 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     address public immutable override endpoint;
 
     /// @inheritdoc IUtexoLZAdapter
-    address public immutable override oft;
-
-    /// @inheritdoc IUtexoLZAdapter
     address public immutable override token;
 
     /// @inheritdoc IUtexoLZAdapter
@@ -104,6 +108,9 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     // =========================================================================
     // Storage
     // =========================================================================
+
+    /// @inheritdoc IUtexoLZAdapter
+    mapping(uint32 eid => address oft) public override oftByEid;
 
     /// @notice Trusted source registry, keyed by the LayerZero transport source
     ///         id (`srcEid`) rather than by raw caller address. For each `srcEid`
@@ -139,6 +146,9 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     ///      reverted. Keyed by LayerZero compose guid (unique per packet).
     mapping(bytes32 guid => StuckFunds) internal _stuckFunds;
 
+    /// @inheritdoc IUtexoLZAdapter
+    uint256 public override totalRecordedStuckToken;
+
     // =========================================================================
     // Modifiers
     // =========================================================================
@@ -157,28 +167,40 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     // =========================================================================
 
     /// @param endpoint_      LayerZero V2 EndpointV2 on Arbitrum.
-    /// @param oft_           USDT0 OFT contract on Arbitrum.
     /// @param token_         USDT0 token on Arbitrum.
     /// @param bridge_        Utexo `Bridge` contract on Arbitrum.
     /// @param multisigProxy_ Utexo `MultisigProxy`.
+    /// @param oftEids_       LayerZero EIDs to configure atomically at deploy.
+    /// @param ofts_          Local USDT0 OFTs corresponding to `oftEids_`.
     constructor(
         address endpoint_,
-        address oft_,
         address token_,
         address bridge_,
-        address multisigProxy_
+        address multisigProxy_,
+        uint32[] memory oftEids_,
+        address[] memory ofts_
     ) {
         if (endpoint_      == address(0)) revert InvalidEndpoint();
-        if (oft_           == address(0)) revert InvalidOft();
         if (token_         == address(0)) revert InvalidToken();
         if (bridge_        == address(0)) revert InvalidBridge();
         if (multisigProxy_ == address(0)) revert InvalidMultisigProxy();
+        if (oftEids_.length == 0) revert NoOftRoutes();
+        if (oftEids_.length != ofts_.length) {
+            revert OftRouteLengthMismatch(oftEids_.length, ofts_.length);
+        }
 
         endpoint      = endpoint_;
-        oft           = oft_;
         token         = token_;
         bridge        = bridge_;
         multisigProxy = multisigProxy_;
+
+        for (uint256 i; i < oftEids_.length; ++i) {
+            if (ofts_[i] == address(0)) revert InvalidOft();
+            for (uint256 j; j < i; ++j) {
+                if (oftEids_[i] == oftEids_[j]) revert DuplicateOftRoute(oftEids_[i]);
+            }
+            _setOftRoute(oftEids_[i], ofts_[i]);
+        }
     }
 
     // =========================================================================
@@ -207,14 +229,19 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         nonReentrant
     {
         if (msg.sender != endpoint) revert NotEndpoint();
-        if (_from      != oft)      revert NotFromOft();
+
+        // A single Arbitrum token can be served by more than one USDT0 mesh.
+        // Select the expected local OFT from the protocol-stamped source EID,
+        // then bind `_from` to that exact route before processing the payload.
+        uint32 srcEid_ = OFTComposeMsgCodec.srcEid(_message);
+        address expectedOft = _requireOftRoute(srcEid_);
+        if (_from != expectedOft) revert UnexpectedOft(srcEid_, _from, expectedOft);
 
         // 1. Bind trust to the LayerZero transport origin. `srcEid` is stamped by
         //    the LayerZero protocol (not by the payload author) and is therefore
         //    non-spoofable. Accept the packet only if its `composeFrom` matches
         //    the single entrypoint registered for that `srcEid`; an unregistered
         //    srcEid (expected == 0) is rejected.
-        uint32  srcEid_      = OFTComposeMsgCodec.srcEid(_message);
         bytes32 composeFrom_ = OFTComposeMsgCodec.composeFrom(_message);
         bytes32 expected     = trustedEntrypoints[srcEid_];
         if (expected == bytes32(0) || composeFrom_ != expected) {
@@ -336,6 +363,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
                 destinationAddress: destinationAddress,
                 settlementData:     settlementData
             });
+            totalRecordedStuckToken += amountLD;
 
             emit ComposeFundsInFailed(
                 guid, sourceSender, sourceChainId, amountLD, msg.value,
@@ -354,6 +382,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
 
         record.amountLD    = amountLD;
         record.nativeValue = msg.value;
+        totalRecordedStuckToken += amountLD;
 
         emit ComposeFundsInFailed(
             guid, bytes32(0), 0, amountLD, msg.value, 0, '', '', bytes('malformed compose payload')
@@ -381,6 +410,14 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         if (amount    == 0)          revert ZeroAmount();
         if (recipient == bytes32(0)) revert InvalidRecipient();
 
+        // A normal outbound batch first transfers fresh Bridge liquidity to
+        // this adapter. Do not let `sendOut` consume token amounts reserved by
+        // failed inbound compose records already held at the same address.
+        uint256 available = availableUntrackedToken();
+        if (amount > available) revert InsufficientUntrackedToken(amount, available);
+
+        address oft_ = _requireOftRoute(dstEid);
+
         // 1. Build the LayerZero send parameters. `composeMsg` is empty — we are
         //    delivering plain USDT0 to the user, not invoking any compose hook on
         //    the destination.
@@ -396,16 +433,16 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
 
         // 2. Re-quote on-chain — defends against the off-chain quote going stale
         //    between TEE signing and MultisigProxy.executeBatch inclusion.
-        MessagingFee memory fee = IOFT(oft).quoteSend(sp, false);
+        MessagingFee memory fee = IOFT(oft_).quoteSend(sp, false);
         if (msg.value < fee.nativeFee) {
             revert InsufficientNativeFee({ provided: msg.value, required: fee.nativeFee });
         }
 
         // 3. Approve OFT to pull the USDT0 we received from Bridge.fundsOut.
-        IERC20(token).safeIncreaseAllowance(oft, amount);
+        IERC20(token).safeIncreaseAllowance(oft_, amount);
 
         // 4. Forward exactly `fee.nativeFee` to the OFT. Refund handled below.
-        (MessagingReceipt memory receipt, ) = IOFT(oft).send{ value: fee.nativeFee }(
+        (MessagingReceipt memory receipt, ) = IOFT(oft_).send{ value: fee.nativeFee }(
             sp,
             fee,
             tx.origin /* refundAddress — defensive only; OFT consumes the full fee */
@@ -435,6 +472,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         override
         returns (uint256 nativeFee)
     {
+        address oft_ = _requireOftRoute(dstEid);
         SendParam memory sp = SendParam({
             dstEid:       dstEid,
             to:           recipient,
@@ -444,7 +482,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             composeMsg:   '',
             oftCmd:       ''
         });
-        return IOFT(oft).quoteSend(sp, false).nativeFee;
+        return IOFT(oft_).quoteSend(sp, false).nativeFee;
     }
 
     // =========================================================================
@@ -473,6 +511,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         if (record.amountLD == 0) revert NoStuckFunds(guid);
 
         delete _stuckFunds[guid];
+        totalRecordedStuckToken -= record.amountLD;
 
         // Token leg. SafeERC20 reverts on failure, the whole call rolls back.
         IERC20(token).safeTransfer(recipient, record.amountLD);
@@ -485,6 +524,75 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         }
 
         emit StuckFundsRefunded(guid, recipient, record.amountLD, record.nativeValue);
+    }
+
+    /// @inheritdoc IUtexoLZAdapter
+    function availableUntrackedToken() public view override returns (uint256) {
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        uint256 reserved = totalRecordedStuckToken;
+        return balance > reserved ? balance - reserved : 0;
+    }
+
+    /// @inheritdoc IUtexoLZAdapter
+    /// @dev Covers tokens credited by an OFT before `lzCompose` reverted on a
+    ///      transport-level check, where no guid-based record could be created.
+    ///      Live stuck records are protected by `totalRecordedStuckToken`.
+    function recoverUntrackedToken(address recipient, uint256 amount)
+        external
+        override
+        onlyMultisigProxy
+        nonReentrant
+    {
+        if (recipient == address(0)) revert InvalidRecipient();
+        if (amount == 0) revert ZeroAmount();
+
+        uint256 available = availableUntrackedToken();
+        if (amount > available) revert InsufficientUntrackedToken(amount, available);
+
+        IERC20(token).safeTransfer(recipient, amount);
+        emit UntrackedTokenRecovered(recipient, amount);
+    }
+
+    // =========================================================================
+    // OFT route registry
+    // =========================================================================
+
+    /// @inheritdoc IUtexoLZAdapter
+    function setOftRoute(uint32 eid, address oft_)
+        external
+        override
+        onlyMultisigProxy
+    {
+        _setOftRoute(eid, oft_);
+    }
+
+    /// @dev A route is valid only when the local OFT serves this adapter's
+    ///      immutable token and is actually connected to the requested remote
+    ///      EID. Passing zero deliberately revokes the route.
+    function _setOftRoute(uint32 eid, address oft_) private {
+        if (eid == 0) revert InvalidSrcEid();
+
+        if (oft_ == address(0)) {
+            delete oftByEid[eid];
+            emit OftRouteSet(eid, address(0));
+            return;
+        }
+
+        if (oft_.code.length == 0) revert InvalidOft();
+
+        address routeToken = IOFT(oft_).token();
+        if (routeToken != token) revert OftTokenMismatch(oft_, routeToken, token);
+        if (IOftPeerView(oft_).peers(eid) == bytes32(0)) {
+            revert OftPeerNotConfigured(oft_, eid);
+        }
+
+        oftByEid[eid] = oft_;
+        emit OftRouteSet(eid, oft_);
+    }
+
+    function _requireOftRoute(uint32 eid) private view returns (address oft_) {
+        oft_ = oftByEid[eid];
+        if (oft_ == address(0)) revert OftRouteNotConfigured(eid);
     }
 
     // =========================================================================

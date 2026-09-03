@@ -59,10 +59,13 @@ contract UtexoLZAdapterTest is Test {
     );
 
     event TrustedEntrypointSet(uint32 indexed srcEid, bytes32 entrypoint, uint256 chainId);
+    event OftRouteSet(uint32 indexed eid, address indexed oft);
+    event UntrackedTokenRecovered(address indexed recipient, uint256 amount);
 
     // -- Constants ------------------------------------------------------------
     uint32  constant SRC_EID         = 30101;     // LZ endpoint id of the inbound packet
     uint32  constant DST_EID         = 30110;     // Arbitrum eid (outbound stub)
+    uint32  constant LEGACY_EID      = 30420;     // Tron eid (legacy USDT0 mesh)
     uint256 constant SOURCE_CHAIN_ID = 1;         // Default `block.chainid` carried by composeMsg
     uint256 constant RGB_CHAIN_ID    = 1_000_001; // Reserved-range id for RGB (non-EVM endpoint)
     uint256 constant NATIVE_FEE      = 0.01 ether;
@@ -103,12 +106,23 @@ contract UtexoLZAdapterTest is Test {
         bridge = new MockBridge(address(token));
         oft.setNativeFee(NATIVE_FEE);
 
+        oft.setPeer(SRC_EID, bytes32(uint256(1)));
+        oft.setPeer(DST_EID, bytes32(uint256(2)));
+
+        uint32[] memory eids = new uint32[](2);
+        eids[0] = SRC_EID;
+        eids[1] = DST_EID;
+        address[] memory ofts = new address[](2);
+        ofts[0] = address(oft);
+        ofts[1] = address(oft);
+
         adapter = new UtexoLZAdapter(
             endpoint,
-            address(oft),
             address(token),
             address(bridge),
-            multisigProxy
+            multisigProxy,
+            eids,
+            ofts
         );
 
         vm.deal(endpoint,      100 ether);
@@ -126,35 +140,69 @@ contract UtexoLZAdapterTest is Test {
 
     function test_constructor_setsImmutables() public view {
         assertEq(adapter.endpoint(),      endpoint,        'endpoint');
-        assertEq(adapter.oft(),           address(oft),    'oft');
         assertEq(adapter.token(),         address(token),  'token');
         assertEq(adapter.bridge(),        address(bridge), 'bridge');
         assertEq(adapter.multisigProxy(), multisigProxy,   'multisigProxy');
+        assertEq(adapter.oftByEid(SRC_EID), address(oft),   'source oft route');
+        assertEq(adapter.oftByEid(DST_EID), address(oft),   'destination oft route');
     }
 
     function test_constructor_revertsOnZeroEndpoint() public {
         vm.expectRevert(IUtexoLZAdapter.InvalidEndpoint.selector);
-        new UtexoLZAdapter(address(0), address(oft), address(token), address(bridge), multisigProxy);
+        _deploySingleRoute(address(0), address(token), address(bridge), multisigProxy, SRC_EID, address(oft));
     }
 
     function test_constructor_revertsOnZeroOft() public {
         vm.expectRevert(IUtexoLZAdapter.InvalidOft.selector);
-        new UtexoLZAdapter(endpoint, address(0), address(token), address(bridge), multisigProxy);
+        _deploySingleRoute(endpoint, address(token), address(bridge), multisigProxy, SRC_EID, address(0));
     }
 
     function test_constructor_revertsOnZeroToken() public {
         vm.expectRevert(IUtexoLZAdapter.InvalidToken.selector);
-        new UtexoLZAdapter(endpoint, address(oft), address(0), address(bridge), multisigProxy);
+        _deploySingleRoute(endpoint, address(0), address(bridge), multisigProxy, SRC_EID, address(oft));
     }
 
     function test_constructor_revertsOnZeroBridge() public {
         vm.expectRevert(IUtexoLZAdapter.InvalidBridge.selector);
-        new UtexoLZAdapter(endpoint, address(oft), address(token), address(0), multisigProxy);
+        _deploySingleRoute(endpoint, address(token), address(0), multisigProxy, SRC_EID, address(oft));
     }
 
     function test_constructor_revertsOnZeroMultisigProxy() public {
         vm.expectRevert(IUtexoLZAdapter.InvalidMultisigProxy.selector);
-        new UtexoLZAdapter(endpoint, address(oft), address(token), address(bridge), address(0));
+        _deploySingleRoute(endpoint, address(token), address(bridge), address(0), SRC_EID, address(oft));
+    }
+
+    function test_constructor_revertsWithoutOftRoutes() public {
+        uint32[] memory eids = new uint32[](0);
+        address[] memory ofts = new address[](0);
+
+        vm.expectRevert(IUtexoLZAdapter.NoOftRoutes.selector);
+        new UtexoLZAdapter(endpoint, address(token), address(bridge), multisigProxy, eids, ofts);
+    }
+
+    function test_constructor_revertsOnOftRouteLengthMismatch() public {
+        uint32[] memory eids = new uint32[](1);
+        eids[0] = SRC_EID;
+        address[] memory ofts = new address[](0);
+
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.OftRouteLengthMismatch.selector, 1, 0
+        ));
+        new UtexoLZAdapter(endpoint, address(token), address(bridge), multisigProxy, eids, ofts);
+    }
+
+    function test_constructor_revertsOnDuplicateOftEid() public {
+        uint32[] memory eids = new uint32[](2);
+        eids[0] = SRC_EID;
+        eids[1] = SRC_EID;
+        address[] memory ofts = new address[](2);
+        ofts[0] = address(oft);
+        ofts[1] = address(oft);
+
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.DuplicateOftRoute.selector, SRC_EID
+        ));
+        new UtexoLZAdapter(endpoint, address(token), address(bridge), multisigProxy, eids, ofts);
     }
 
     // =========================================================================
@@ -397,9 +445,67 @@ contract UtexoLZAdapterTest is Test {
             abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string('b'), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
+        address wrongOft = makeAddr('not-oft');
         vm.prank(endpoint);
-        vm.expectRevert(IUtexoLZAdapter.NotFromOft.selector);
-        adapter.lzCompose(makeAddr('not-oft'), bytes32(0), message, address(0), '');
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.UnexpectedOft.selector, SRC_EID, wrongOft, address(oft)
+        ));
+        adapter.lzCompose(wrongOft, bytes32(0), message, address(0), '');
+    }
+
+    function test_lzCompose_selectsOftBySourceEidAcrossMeshes() public {
+        MockOFT legacyOft = new MockOFT(address(token));
+        legacyOft.setPeer(LEGACY_EID, bytes32(uint256(0xBEEF)));
+
+        vm.prank(multisigProxy);
+        adapter.setOftRoute(LEGACY_EID, address(legacyOft));
+        vm.prank(multisigProxy);
+        adapter.setTrustedEntrypoint(LEGACY_EID, TRUSTED_ENTRYPOINT_B32, SOURCE_CHAIN_ID);
+
+        uint256 amount = 5e6;
+        token.mint(address(adapter), amount);
+        bytes memory message = _encodeCompose(
+            uint64(1), LEGACY_EID, amount, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string('tron-user'), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+
+        vm.prank(endpoint);
+        adapter.lzCompose(address(legacyOft), bytes32('legacy-in'), message, address(0), '');
+
+        assertEq(token.balanceOf(address(bridge)), amount, 'legacy route forwarded');
+    }
+
+    function test_lzCompose_rejectsOftConfiguredForDifferentEid() public {
+        MockOFT legacyOft = new MockOFT(address(token));
+        legacyOft.setPeer(LEGACY_EID, bytes32(uint256(0xBEEF)));
+
+        vm.prank(multisigProxy);
+        adapter.setOftRoute(LEGACY_EID, address(legacyOft));
+
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, 1e6, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string('b'), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+
+        vm.prank(endpoint);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.UnexpectedOft.selector, SRC_EID, address(legacyOft), address(oft)
+        ));
+        adapter.lzCompose(address(legacyOft), bytes32('wrong-mesh'), message, address(0), '');
+    }
+
+    function test_lzCompose_revertsWhenSourceEidHasNoOftRoute() public {
+        uint32 unknownEid = 40_161;
+        bytes memory message = _encodeCompose(
+            uint64(1), unknownEid, 1e6, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string('b'), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+
+        vm.prank(endpoint);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.OftRouteNotConfigured.selector, unknownEid
+        ));
+        adapter.lzCompose(address(oft), bytes32('missing-route'), message, address(0), '');
     }
 
     /// @dev Current behavior: if Bridge reverts and the catch-path allowance
@@ -409,12 +515,9 @@ contract UtexoLZAdapterTest is Test {
         ZeroApprovalRevertingERC20 badToken = new ZeroApprovalRevertingERC20();
         MockOFT badOft = new MockOFT(address(badToken));
         MockBridge badBridge = new MockBridge(address(badToken));
-        UtexoLZAdapter badAdapter = new UtexoLZAdapter(
-            endpoint,
-            address(badOft),
-            address(badToken),
-            address(badBridge),
-            multisigProxy
+        badOft.setPeer(SRC_EID, bytes32(uint256(1)));
+        UtexoLZAdapter badAdapter = _deploySingleRoute(
+            endpoint, address(badToken), address(badBridge), multisigProxy, SRC_EID, address(badOft)
         );
 
         vm.prank(multisigProxy);
@@ -454,12 +557,8 @@ contract UtexoLZAdapterTest is Test {
     ///      stuck record that refundStuckFunds treats as nonexistent.
     function test_zeroCreditedAmountCreatesUnrecoverableNativeStuckRecord_currentBehavior() public {
         ZeroAmountBridge zeroBridge = new ZeroAmountBridge();
-        UtexoLZAdapter zeroAdapter = new UtexoLZAdapter(
-            endpoint,
-            address(oft),
-            address(token),
-            address(zeroBridge),
-            multisigProxy
+        UtexoLZAdapter zeroAdapter = _deploySingleRoute(
+            endpoint, address(token), address(zeroBridge), multisigProxy, SRC_EID, address(oft)
         );
 
         vm.prank(multisigProxy);
@@ -904,6 +1003,27 @@ contract UtexoLZAdapterTest is Test {
         );
     }
 
+    function test_sendOut_selectsOftByDestinationEid() public {
+        MockOFT legacyOft = new MockOFT(address(token));
+        legacyOft.setPeer(LEGACY_EID, bytes32(uint256(0xBEEF)));
+        legacyOft.setNativeFee(NATIVE_FEE);
+
+        vm.prank(multisigProxy);
+        adapter.setOftRoute(LEGACY_EID, address(legacyOft));
+
+        uint256 amount = 9e6;
+        token.mint(address(adapter), amount);
+
+        vm.prank(multisigProxy, relayer);
+        adapter.sendOut{ value: NATIVE_FEE }(
+            LEGACY_EID, recipientB32, amount, amount, hex'0003'
+        );
+
+        assertEq(token.balanceOf(address(legacyOft)), amount, 'selected legacy OFT');
+        assertEq(token.balanceOf(address(oft)), 0, 'native OFT untouched');
+        assertEq(legacyOft.lastDstEid(), LEGACY_EID, 'destination EID forwarded');
+    }
+
     // =========================================================================
     // sendOut — access control & input validation
     // =========================================================================
@@ -935,6 +1055,47 @@ contract UtexoLZAdapterTest is Test {
         adapter.sendOut{ value: NATIVE_FEE }(
             DST_EID, bytes32(0), 100e6, 100e6, hex'0003'
         );
+    }
+
+    function test_sendOut_revertsWhenDestinationEidHasNoOftRoute() public {
+        uint32 unknownEid = 40_161;
+        token.mint(address(adapter), 100e6);
+        vm.prank(multisigProxy, relayer);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.OftRouteNotConfigured.selector, unknownEid
+        ));
+        adapter.sendOut{ value: NATIVE_FEE }(
+            unknownEid, recipientB32, 100e6, 100e6, hex'0003'
+        );
+    }
+
+    function test_sendOut_cannotConsumeRecordedStuckFunds() public {
+        uint256 stuckAmount = 10e6;
+        _createStuckRecord(bytes32('send-protected'), stuckAmount, 0, RGB_CHAIN_ID, 'addr');
+
+        vm.prank(multisigProxy, relayer);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.InsufficientUntrackedToken.selector, stuckAmount, 0
+        ));
+        adapter.sendOut{ value: NATIVE_FEE }(
+            DST_EID, recipientB32, stuckAmount, stuckAmount, hex'0003'
+        );
+    }
+
+    function test_sendOut_canUseFreshBalanceWhileRecordedFundsRemainReserved() public {
+        uint256 stuckAmount = 10e6;
+        uint256 outboundAmount = 5e6;
+        _createStuckRecord(bytes32('send-reserve'), stuckAmount, 0, RGB_CHAIN_ID, 'addr');
+        token.mint(address(adapter), outboundAmount);
+
+        vm.prank(multisigProxy, relayer);
+        adapter.sendOut{ value: NATIVE_FEE }(
+            DST_EID, recipientB32, outboundAmount, outboundAmount, hex'0003'
+        );
+
+        assertEq(token.balanceOf(address(adapter)), stuckAmount, 'recorded balance remains');
+        assertEq(adapter.totalRecordedStuckToken(), stuckAmount, 'recorded reserve remains');
+        assertEq(token.balanceOf(address(oft)), outboundAmount, 'fresh balance sent');
     }
 
     function test_sendOut_revertsOnInsufficientNativeFee() public {
@@ -1005,6 +1166,20 @@ contract UtexoLZAdapterTest is Test {
             DST_EID, recipientB32, 1e6, 1e6, hex'0003'
         );
         assertEq(fee, 0.0042 ether, 'quote matches oft');
+    }
+
+    function test_quoteSendOut_selectsOftByDestinationEid() public {
+        MockOFT legacyOft = new MockOFT(address(token));
+        legacyOft.setPeer(LEGACY_EID, bytes32(uint256(0xBEEF)));
+        legacyOft.setNativeFee(0.0077 ether);
+
+        vm.prank(multisigProxy);
+        adapter.setOftRoute(LEGACY_EID, address(legacyOft));
+
+        uint256 fee = adapter.quoteSendOut(
+            LEGACY_EID, recipientB32, 1e6, 1e6, hex'0003'
+        );
+        assertEq(fee, 0.0077 ether, 'legacy OFT quote selected');
     }
 
     // =========================================================================
@@ -1092,10 +1267,9 @@ contract UtexoLZAdapterTest is Test {
         assertEq(token.balanceOf(address(adapter)), 0,      'adapter cleared');
     }
 
-    /// @dev Current behavior: `refundStuckFunds` releases only the amount stored
-    ///      under a stuck guid. Any unrelated token balance already sitting on
-    ///      the adapter is not swept by the recovery path.
-    function test_adapterOrphanBalanceHasNoSweep_currentBehavior() public {
+    /// @dev `refundStuckFunds` releases only the amount stored under a guid;
+    ///      unrelated balance requires the explicit untracked-recovery path.
+    function test_refundStuckFunds_doesNotSweepUntrackedToken() public {
         uint256 orphanAmount = 300e6;
         uint256 stuckAmount  = 700e6;
         bytes32 guid         = bytes32('partial-recovery');
@@ -1116,6 +1290,100 @@ contract UtexoLZAdapterTest is Test {
 
         IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
         assertEq(rec.amountLD, 0, 'stuck record deleted');
+    }
+
+    function test_recoverUntrackedToken_recoversOnlyUnreservedBalance() public {
+        uint256 untrackedAmount = 300e6;
+        uint256 stuckAmount     = 700e6;
+        bytes32 guid            = bytes32('protected-stuck');
+
+        token.mint(address(adapter), untrackedAmount);
+        _createStuckRecord(guid, stuckAmount, 0, RGB_CHAIN_ID, 'addr');
+
+        assertEq(adapter.totalRecordedStuckToken(), stuckAmount, 'recorded reserve');
+        assertEq(adapter.availableUntrackedToken(), untrackedAmount, 'only surplus available');
+
+        address recipient = makeAddr('recoveryRecipient');
+        vm.expectEmit(true, false, false, true, address(adapter));
+        emit UntrackedTokenRecovered(recipient, untrackedAmount);
+
+        vm.prank(multisigProxy);
+        adapter.recoverUntrackedToken(recipient, untrackedAmount);
+
+        assertEq(token.balanceOf(recipient), untrackedAmount, 'surplus recovered');
+        assertEq(token.balanceOf(address(adapter)), stuckAmount, 'recorded tokens protected');
+        assertEq(adapter.totalRecordedStuckToken(), stuckAmount, 'reserve unchanged');
+        assertEq(adapter.getStuckFunds(guid).amountLD, stuckAmount, 'record preserved');
+    }
+
+    function test_recoverUntrackedToken_revertsBeforeConsumingRecordedFunds() public {
+        uint256 untrackedAmount = 300e6;
+        uint256 stuckAmount     = 700e6;
+        token.mint(address(adapter), untrackedAmount);
+        _createStuckRecord(bytes32('protected'), stuckAmount, 0, RGB_CHAIN_ID, 'addr');
+
+        vm.prank(multisigProxy);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.InsufficientUntrackedToken.selector,
+            untrackedAmount + 1,
+            untrackedAmount
+        ));
+        adapter.recoverUntrackedToken(makeAddr('recipient'), untrackedAmount + 1);
+    }
+
+    function test_recoverUntrackedToken_handlesPreRecordComposeFailure() public {
+        uint256 creditedAmount = 4_998_500;
+        token.mint(address(adapter), creditedAmount);
+
+        bytes memory message = _encodeCompose(
+            uint64(1), SRC_EID, creditedAmount, TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string('b'), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+
+        // Reproduce the incident shape: OFT credit has already happened, then
+        // lzCompose rejects the local OFT before a guid record can be written.
+        vm.prank(endpoint);
+        vm.expectRevert();
+        adapter.lzCompose(makeAddr('wrong-mesh'), bytes32('pre-record'), message, address(0), '');
+        assertEq(adapter.getStuckFunds(bytes32('pre-record')).amountLD, 0, 'no guid record');
+        assertEq(adapter.availableUntrackedToken(), creditedAmount, 'credit recoverable');
+
+        address recipient = makeAddr('incidentRecipient');
+        vm.prank(multisigProxy);
+        adapter.recoverUntrackedToken(recipient, creditedAmount);
+        assertEq(token.balanceOf(recipient), creditedAmount, 'incident balance recovered');
+    }
+
+    function test_recoverUntrackedToken_revertsIfNotMultisigProxy() public {
+        token.mint(address(adapter), 1e6);
+        vm.prank(makeAddr('attacker'));
+        vm.expectRevert(IUtexoLZAdapter.NotMultisigProxy.selector);
+        adapter.recoverUntrackedToken(makeAddr('recipient'), 1e6);
+    }
+
+    function test_recoverUntrackedToken_revertsOnZeroRecipientOrAmount() public {
+        token.mint(address(adapter), 1e6);
+
+        vm.prank(multisigProxy);
+        vm.expectRevert(IUtexoLZAdapter.InvalidRecipient.selector);
+        adapter.recoverUntrackedToken(address(0), 1e6);
+
+        vm.prank(multisigProxy);
+        vm.expectRevert(IUtexoLZAdapter.ZeroAmount.selector);
+        adapter.recoverUntrackedToken(makeAddr('recipient'), 0);
+    }
+
+    function test_refundStuckFunds_decrementsRecordedReserve() public {
+        uint256 amount = 700e6;
+        bytes32 guid = bytes32('reserve-refund');
+        _createStuckRecord(guid, amount, 0, RGB_CHAIN_ID, 'addr');
+        assertEq(adapter.totalRecordedStuckToken(), amount, 'reserve created');
+
+        vm.prank(multisigProxy);
+        adapter.refundStuckFunds(guid, makeAddr('recipient'));
+
+        assertEq(adapter.totalRecordedStuckToken(), 0, 'reserve released');
+        assertEq(adapter.availableUntrackedToken(), 0, 'no residual surplus');
     }
 
     function test_refundStuckFunds_revertsIfNotMultisigProxy() public {
@@ -1167,6 +1435,72 @@ contract UtexoLZAdapterTest is Test {
         assertEq(rec.nativeValue, nativeValue, 'record preserved');
         assertEq(token.balanceOf(address(adapter)), amount,      'tokens preserved');
         assertEq(address(adapter).balance,          nativeValue, 'native preserved');
+    }
+
+    // =========================================================================
+    // OFT route registry — setOftRoute
+    // =========================================================================
+
+    function test_setOftRoute_setsReplacesAndRevokesRoute() public {
+        MockOFT legacyOft = new MockOFT(address(token));
+        legacyOft.setPeer(LEGACY_EID, bytes32(uint256(0xBEEF)));
+
+        vm.expectEmit(true, true, false, true, address(adapter));
+        emit OftRouteSet(LEGACY_EID, address(legacyOft));
+        vm.prank(multisigProxy);
+        adapter.setOftRoute(LEGACY_EID, address(legacyOft));
+        assertEq(adapter.oftByEid(LEGACY_EID), address(legacyOft), 'route set');
+
+        vm.expectEmit(true, true, false, true, address(adapter));
+        emit OftRouteSet(LEGACY_EID, address(0));
+        vm.prank(multisigProxy);
+        adapter.setOftRoute(LEGACY_EID, address(0));
+        assertEq(adapter.oftByEid(LEGACY_EID), address(0), 'route revoked');
+    }
+
+    function test_setOftRoute_revertsIfNotMultisigProxy() public {
+        vm.prank(makeAddr('attacker'));
+        vm.expectRevert(IUtexoLZAdapter.NotMultisigProxy.selector);
+        adapter.setOftRoute(LEGACY_EID, address(oft));
+    }
+
+    function test_setOftRoute_revertsOnZeroEid() public {
+        vm.prank(multisigProxy);
+        vm.expectRevert(IUtexoLZAdapter.InvalidSrcEid.selector);
+        adapter.setOftRoute(0, address(oft));
+    }
+
+    function test_setOftRoute_revertsForNonContractOft() public {
+        vm.prank(multisigProxy);
+        vm.expectRevert(IUtexoLZAdapter.InvalidOft.selector);
+        adapter.setOftRoute(LEGACY_EID, makeAddr('not-contract'));
+    }
+
+    function test_setOftRoute_revertsWhenOftUsesDifferentToken() public {
+        MockERC20 otherToken = new MockERC20('OTHER', 'OTHER');
+        MockOFT wrongTokenOft = new MockOFT(address(otherToken));
+        wrongTokenOft.setPeer(LEGACY_EID, bytes32(uint256(0xBEEF)));
+
+        vm.prank(multisigProxy);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.OftTokenMismatch.selector,
+            address(wrongTokenOft),
+            address(otherToken),
+            address(token)
+        ));
+        adapter.setOftRoute(LEGACY_EID, address(wrongTokenOft));
+    }
+
+    function test_setOftRoute_revertsWhenOftHasNoPeerForEid() public {
+        MockOFT unconnectedOft = new MockOFT(address(token));
+
+        vm.prank(multisigProxy);
+        vm.expectRevert(abi.encodeWithSelector(
+            IUtexoLZAdapter.OftPeerNotConfigured.selector,
+            address(unconnectedOft),
+            LEGACY_EID
+        ));
+        adapter.setOftRoute(LEGACY_EID, address(unconnectedOft));
     }
 
     // =========================================================================
@@ -1315,6 +1649,12 @@ contract UtexoLZAdapterTest is Test {
         uint256 amount   = 1e6;
         token.mint(address(adapter), amount);
 
+        // Configure only the transport route. The source identity remains
+        // intentionally unregistered so this test reaches the trust check.
+        oft.setPeer(otherEid, bytes32(uint256(3)));
+        vm.prank(multisigProxy);
+        adapter.setOftRoute(otherEid, address(oft));
+
         // composeFrom is the entrypoint trusted for SRC_EID, but the transport
         // srcEid here is `otherEid`, for which nothing is registered.
         bytes memory message = _encodeCompose(
@@ -1462,6 +1802,23 @@ contract UtexoLZAdapterTest is Test {
     // =========================================================================
     // Helpers
     // =========================================================================
+
+    function _deploySingleRoute(
+        address endpoint_,
+        address token_,
+        address bridge_,
+        address multisigProxy_,
+        uint32 eid_,
+        address oft_
+    ) internal returns (UtexoLZAdapter deployed) {
+        uint32[] memory eids = new uint32[](1);
+        eids[0] = eid_;
+        address[] memory ofts = new address[](1);
+        ofts[0] = oft_;
+        deployed = new UtexoLZAdapter(
+            endpoint_, token_, bridge_, multisigProxy_, eids, ofts
+        );
+    }
 
     /// @dev Drive `lzCompose` against a reverting Bridge so a stuck record
     ///      is created for `guid`. `sourceChainId` is set to `SOURCE_CHAIN_ID`.

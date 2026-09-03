@@ -54,6 +54,13 @@ interface IUtexoLZAdapter {
 
     error InvalidEndpoint();
     error InvalidOft();
+    error NoOftRoutes();
+    error OftRouteLengthMismatch(uint256 eidsLength, uint256 oftsLength);
+    error DuplicateOftRoute(uint32 eid);
+    error OftRouteNotConfigured(uint32 eid);
+    error UnexpectedOft(uint32 eid, address provided, address expected);
+    error OftTokenMismatch(address oft, address actualToken, address expectedToken);
+    error OftPeerNotConfigured(address oft, uint32 eid);
     error InvalidToken();
     error InvalidBridge();
     error InvalidMultisigProxy();
@@ -62,7 +69,6 @@ interface IUtexoLZAdapter {
     error InvalidChainId();
     error NotEndpoint();
     error NotMultisigProxy();
-    error NotFromOft();
     error ZeroAmount();
     error InsufficientNativeFee(uint256 provided, uint256 required);
     error NativeRefundFailed();
@@ -73,6 +79,7 @@ interface IUtexoLZAdapter {
     error SettlementDataTooLong(uint256 length, uint256 maxLength);
     error DestinationAddressTooLong(uint256 length, uint256 maxLength);
     error ComposeValueMismatch(uint256 provided, uint256 expected);
+    error InsufficientUntrackedToken(uint256 requested, uint256 available);
 
     // =========================================================================
     // Events
@@ -155,15 +162,30 @@ interface IUtexoLZAdapter {
     ///                   (`0` on revoke).
     event TrustedEntrypointSet(uint32 indexed srcEid, bytes32 entrypoint, uint256 chainId);
 
+    /// @notice Emitted when the Arbitrum-side OFT route for a LayerZero EID is
+    ///         registered, replaced, or revoked (`oft == address(0)`).
+    event OftRouteSet(uint32 indexed eid, address indexed oft);
+
+    /// @notice Emitted when federation governance recovers tokens that reached
+    ///         the adapter before a `_stuckFunds` record could be created.
+    event UntrackedTokenRecovered(address indexed recipient, uint256 amount);
+
     // =========================================================================
     // State views
     // =========================================================================
 
     function endpoint()      external view returns (address);
-    function oft()           external view returns (address);
     function token()         external view returns (address);
     function bridge()        external view returns (address);
     function multisigProxy() external view returns (address);
+
+    /// @notice Arbitrum-side OFT used for messages to/from a LayerZero EID.
+    ///         Different EIDs may use different USDT0 meshes while sharing the
+    ///         same underlying Arbitrum USDT0 token.
+    function oftByEid(uint32 eid) external view returns (address);
+
+    /// @notice Sum of token amounts reserved by live `_stuckFunds` records.
+    function totalRecordedStuckToken() external view returns (uint256);
 
     /// @notice The source-chain entrypoint (as bytes32) trusted to drive
     ///         `lzCompose` for a given LayerZero transport `srcEid`.
@@ -224,6 +246,23 @@ interface IUtexoLZAdapter {
     /// @param guid      LayerZero compose guid whose record to refund.
     /// @param recipient Destination for the refund (non-zero).
     function refundStuckFunds(bytes32 guid, address recipient) external;
+
+    /// @notice Amount of adapter-held USDT0 that is not reserved by a live
+    ///         `_stuckFunds` record and can therefore be recovered separately.
+    function availableUntrackedToken() external view returns (uint256);
+
+    /// @notice Recovers USDT0 credited before `lzCompose` could create a stuck
+    ///         record. Cannot consume balances reserved by recorded failures.
+    function recoverUntrackedToken(address recipient, uint256 amount) external;
+
+    // =========================================================================
+    // OFT route registry
+    // =========================================================================
+
+    /// @notice Registers, replaces, or revokes the local OFT for `eid`.
+    ///         A non-zero OFT must expose the adapter token and have a peer for
+    ///         `eid`. Pass `address(0)` to revoke the route.
+    function setOftRoute(uint32 eid, address oft) external;
 
     // =========================================================================
     // Trusted entrypoint registry
