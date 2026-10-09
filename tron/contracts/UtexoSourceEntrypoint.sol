@@ -64,9 +64,9 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     ///         chain. Capping it here keeps an honest deposit from ever encoding
     ///         an oversized blob into the LayerZero `composeMsg`, which the
     ///         destination adapter would then have to bound (or strand) on the
-    ///         failure path. 1024 bytes is ample for the RGB route's 32-byte
+    ///         failure path. 128 bytes is ample for the RGB route's 32-byte
     ///         `abi.encode(uint256 rgbOpId)` blob (or empty for routes needing none).
-    uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 1024;
+    uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 128;
 
     /// @notice Upper bound on the `destinationAddress` byte length, mirroring
     ///         `UtexoLZAdapter.MAX_DESTINATION_ADDRESS_LENGTH` and the Bridge's

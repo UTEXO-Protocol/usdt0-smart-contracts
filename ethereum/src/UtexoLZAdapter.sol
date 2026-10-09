@@ -75,10 +75,10 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     ///         from a buggy/compromised entrypoint could make the catch-branch
     ///         storage write exhaust the LayerZero Executor gas budget. LZ-adapter
     ///         routes carry only a small blob (the RGB route's `abi.encode(uint256
-    ///         rgbOpId)` is 32 bytes; empty for routes needing none), so 1024
+    ///         rgbOpId)` is 32 bytes; empty for routes needing none), so 128
     ///         bytes is ample headroom. The same cap is mirrored on the
     ///         source-chain `UtexoSourceEntrypoint`.
-    uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 1024;
+    uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 128;
 
     /// @notice Upper bound on the inbound `destinationAddress` byte length.
     ///         It is forwarded into `Bridge.fundsIn` (which itself caps at
