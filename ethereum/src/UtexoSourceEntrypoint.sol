@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.35;
 
-import { IERC20 }          from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
-import { SafeERC20 }       from '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol';
-import { Ownable }         from '@openzeppelin/contracts/access/Ownable.sol';
-import { Ownable2Step }    from '@openzeppelin/contracts/access/Ownable2Step.sol';
-import { Pausable }        from '@openzeppelin/contracts/utils/Pausable.sol';
-import { ReentrancyGuard } from '@openzeppelin/contracts/utils/ReentrancyGuard.sol';
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
+import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-import { IOFT, SendParam }                from '@layerzerolabs/lz-evm-oapp-v2/contracts/oft/interfaces/IOFT.sol';
-import { MessagingFee, MessagingReceipt } from '@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol';
+import {IOFT, SendParam} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oft/interfaces/IOFT.sol";
+import {
+    MessagingFee,
+    MessagingReceipt
+} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
-import { IUtexoSourceEntrypoint } from './interfaces/IUtexoSourceEntrypoint.sol';
+import {IUtexoSourceEntrypoint} from "./interfaces/IUtexoSourceEntrypoint.sol";
 
 /// @title UtexoSourceEntrypoint
 /// @notice Utexo's user-facing deposit contract on source chains (Ethereum, OP, Base, …).
@@ -87,7 +90,7 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     address public immutable override oft;
 
     /// @inheritdoc IUtexoSourceEntrypoint
-    uint32  public immutable override dstEid;
+    uint32 public immutable override dstEid;
 
     /// @inheritdoc IUtexoSourceEntrypoint
     bytes32 public immutable override lzAdapter;
@@ -104,21 +107,17 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     /// @param lzAdapter_  `UtexoLZAdapter` address on the destination chain, encoded
     ///                    as bytes32 (address left-padded, per LayerZero V2 convention).
     /// @param initialOwner_  Address that receives ownership at deployment.
-    constructor(
-        address token_,
-        address oft_,
-        uint32  dstEid_,
-        bytes32 lzAdapter_,
-        address initialOwner_
-    ) Ownable(initialOwner_) {
-        if (token_ == address(0))      revert InvalidTokenAddress();
-        if (oft_ == address(0))        revert InvalidOftAddress();
-        if (dstEid_ == 0)              revert InvalidDstEid();
-        if (lzAdapter_ == bytes32(0))  revert InvalidLZAdapter();
+    constructor(address token_, address oft_, uint32 dstEid_, bytes32 lzAdapter_, address initialOwner_)
+        Ownable(initialOwner_)
+    {
+        if (token_ == address(0)) revert InvalidTokenAddress();
+        if (oft_ == address(0)) revert InvalidOftAddress();
+        if (dstEid_ == 0) revert InvalidDstEid();
+        if (lzAdapter_ == bytes32(0)) revert InvalidLZAdapter();
 
-        token     = token_;
-        oft       = oft_;
-        dstEid    = dstEid_;
+        token = token_;
+        oft = oft_;
+        dstEid = dstEid_;
         lzAdapter = lzAdapter_;
     }
 
@@ -148,11 +147,8 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         //    `block.chainid` prepended. A malformed `payload` reverts here —
         //    on the source chain, before any LZ fee is paid — so honest deposits
         //    can never feed malformed bytes into `UtexoLZAdapter.lzCompose`.
-        (
-            uint256 destinationChainId,
-            string memory destinationAddress,
-            bytes memory settlementData
-        ) = abi.decode(depositParams.payload, (uint256, string, bytes));
+        (uint256 destinationChainId, string memory destinationAddress, bytes memory settlementData) =
+            abi.decode(depositParams.payload, (uint256, string, bytes));
 
         // Bound the decoded inputs at the source so oversized values can never
         // enter the cross-chain composeMsg.
@@ -178,13 +174,13 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         // 3. Build the LayerZero send parameters. `dstEid` and `to` are immutable
         //    on this contract — the caller cannot redirect the funds.
         SendParam memory sp = SendParam({
-            dstEid:       dstEid,
-            to:           lzAdapter,
-            amountLD:     depositParams.amountLD,
-            minAmountLD:  depositParams.minAmountLD,
+            dstEid: dstEid,
+            to: lzAdapter,
+            amountLD: depositParams.amountLD,
+            minAmountLD: depositParams.minAmountLD,
             extraOptions: depositParams.extraOptions,
-            composeMsg:   composeMsg,
-            oftCmd:       ''
+            composeMsg: composeMsg,
+            oftCmd: ""
         });
 
         // 4. Re-quote the LayerZero fee on-chain. This defends against the window
@@ -192,27 +188,24 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         //    LayerZero pricing may change.
         MessagingFee memory fee = IOFT(oft).quoteSend(sp, false);
         if (msg.value < fee.nativeFee) {
-            revert InsufficientNativeFee({ provided: msg.value, required: fee.nativeFee });
+            revert InsufficientNativeFee({provided: msg.value, required: fee.nativeFee});
         }
 
         // 5. Resolve the native-refund target. A contract caller that cannot
         //    receive native would otherwise have its deposit bricked on the
         //    surplus refund, so the caller may name an explicit recipient.
-        address refundTo = depositParams.refundTo == address(0)
-            ? msg.sender
-            : depositParams.refundTo;
+        address refundTo = depositParams.refundTo == address(0) ? msg.sender : depositParams.refundTo;
 
         // 6. Forward exactly `fee.nativeFee` to the OFT; refund surplus ourselves.
         //    `refundTo` is passed as the OFT `refundAddress` too, though with this
         //    call shape the OFT has no surplus to refund.
-        (MessagingReceipt memory receipt, ) =
-            IOFT(oft).send{ value: fee.nativeFee }(sp, fee, refundTo);
+        (MessagingReceipt memory receipt,) = IOFT(oft).send{value: fee.nativeFee}(sp, fee, refundTo);
         guid = receipt.guid;
 
         // 7. Refund the native surplus (msg.value - nativeFee) to `refundTo`.
         uint256 excess = msg.value - fee.nativeFee;
         if (excess != 0) {
-            (bool ok, ) = refundTo.call{ value: excess }('');
+            (bool ok,) = refundTo.call{value: excess}("");
             if (!ok) revert NativeRefundFailed();
         }
 
@@ -228,19 +221,11 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     }
 
     /// @inheritdoc IUtexoSourceEntrypoint
-    function quote(DepositParams calldata depositParams)
-        external
-        view
-        override
-        returns (uint256 nativeFee)
-    {
+    function quote(DepositParams calldata depositParams) external view override returns (uint256 nativeFee) {
         // Mirror `deposit`'s payload handling so the quote covers the exact
         // composeMsg the actual send would carry.
-        (
-            uint256 destinationChainId,
-            string memory destinationAddress,
-            bytes memory settlementData
-        ) = abi.decode(depositParams.payload, (uint256, string, bytes));
+        (uint256 destinationChainId, string memory destinationAddress, bytes memory settlementData) =
+            abi.decode(depositParams.payload, (uint256, string, bytes));
 
         // Same caps as `deposit` so the quote reverts on exactly the inputs the
         // send would reject.
@@ -262,13 +247,13 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             depositParams.expectedComposeValue
         );
         SendParam memory sp = SendParam({
-            dstEid:       dstEid,
-            to:           lzAdapter,
-            amountLD:     depositParams.amountLD,
-            minAmountLD:  depositParams.minAmountLD,
+            dstEid: dstEid,
+            to: lzAdapter,
+            amountLD: depositParams.amountLD,
+            minAmountLD: depositParams.minAmountLD,
             extraOptions: depositParams.extraOptions,
-            composeMsg:   composeMsg,
-            oftCmd:       ''
+            composeMsg: composeMsg,
+            oftCmd: ""
         });
         return IOFT(oft).quoteSend(sp, false).nativeFee;
     }

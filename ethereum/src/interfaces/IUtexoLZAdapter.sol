@@ -44,8 +44,8 @@ interface IUtexoLZAdapter {
         bytes32 sourceSender;
         uint256 sourceChainId;
         uint256 destinationChainId;
-        string  destinationAddress;
-        bytes   settlementData;
+        string destinationAddress;
+        bytes settlementData;
     }
 
     // =========================================================================
@@ -108,8 +108,8 @@ interface IUtexoLZAdapter {
         uint256 sourceChainId,
         uint256 amountLD,
         uint256 destinationChainId,
-        string  destinationAddress,
-        bytes   settlementData
+        string destinationAddress,
+        bytes settlementData
     );
 
     /// @notice Emitted on a successful outbound `sendOut` → `OFT.send` call.
@@ -117,12 +117,7 @@ interface IUtexoLZAdapter {
     /// @param dstEid     Destination LayerZero endpoint id.
     /// @param recipient  Recipient address on the destination chain (left-padded bytes32).
     /// @param amountLD   Amount of USDT0 sent.
-    event SendOut(
-        bytes32 indexed guid,
-        uint32  dstEid,
-        bytes32 recipient,
-        uint256 amountLD
-    );
+    event SendOut(bytes32 indexed guid, uint32 dstEid, bytes32 recipient, uint256 amountLD);
 
     /// @notice Emitted when `Bridge.fundsIn` reverted inside `lzCompose`. The
     ///         minted USDT0 (and any forwarded native) is held on the adapter
@@ -138,19 +133,14 @@ interface IUtexoLZAdapter {
         uint256 amountLD,
         uint256 nativeValue,
         uint256 destinationChainId,
-        string  destinationAddress,
-        bytes   settlementData,
-        bytes   reason
+        string destinationAddress,
+        bytes settlementData,
+        bytes reason
     );
 
     /// @notice Emitted when `refundStuckFunds` releases a stuck record to a
     ///         recipient designated by federation governance.
-    event StuckFundsRefunded(
-        bytes32 indexed guid,
-        address indexed recipient,
-        uint256 amountLD,
-        uint256 nativeValue
-    );
+    event StuckFundsRefunded(bytes32 indexed guid, address indexed recipient, uint256 amountLD, uint256 nativeValue);
 
     /// @notice Emitted whenever a trusted-source binding is mutated by
     ///         federation governance.
@@ -174,9 +164,9 @@ interface IUtexoLZAdapter {
     // State views
     // =========================================================================
 
-    function endpoint()      external view returns (address);
-    function token()         external view returns (address);
-    function bridge()        external view returns (address);
+    function endpoint() external view returns (address);
+    function token() external view returns (address);
+    function bridge() external view returns (address);
     function multisigProxy() external view returns (address);
 
     /// @notice Arbitrum-side OFT used for messages to/from a LayerZero EID.
@@ -218,21 +208,17 @@ interface IUtexoLZAdapter {
     /// @dev The LayerZero message guid is published only via the `SendOut`
     ///      event — the sole authorised caller (`MultisigProxy.executeBatch`)
     ///      cannot consume a return value anyway.
-    function sendOut(
-        uint32  dstEid,
-        bytes32 recipient,
-        uint256 amount,
-        uint256 minAmountLD,
-        bytes   calldata extraOptions
-    ) external payable;
+    function sendOut(uint32 dstEid, bytes32 recipient, uint256 amount, uint256 minAmountLD, bytes calldata extraOptions)
+        external
+        payable;
 
     /// @notice Convenience re-export of `OFT.quoteSend` for the outbound shape.
     function quoteSendOut(
-        uint32  dstEid,
+        uint32 dstEid,
         bytes32 recipient,
         uint256 amount,
         uint256 minAmountLD,
-        bytes   calldata extraOptions
+        bytes calldata extraOptions
     ) external view returns (uint256 nativeFee);
 
     // =========================================================================

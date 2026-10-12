@@ -1,12 +1,12 @@
 {
   "../lib/bridge-smart-contracts": {
-    "rev": "9a9a0b477f28c11c3bb7de6031bf0599180b927e"
+    "rev": "b234e4a405b0fce6a320ce1723af6add28bd8bf7"
   },
   "lib/LayerZero-v2": {
     "rev": "9c741e7f9790639537b1710a203bcdfd73b0b9ac"
   },
   "lib/forge-std": {
-    "rev": "8987040ede9553cea20c95ad40d0455930f9c8e0"
+    "rev": "620536fa5277db4e3fd46772d5cbc1ea0696fb43"
   },
   "lib/openzeppelin-contracts": {
     "rev": "5fd1781b1454fd1ef8e722282f86f9293cacf256"

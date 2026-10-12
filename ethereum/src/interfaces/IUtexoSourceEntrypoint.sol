@@ -44,8 +44,8 @@ interface IUtexoSourceEntrypoint {
     struct DepositParams {
         uint256 amountLD;
         uint256 minAmountLD;
-        bytes   extraOptions;
-        bytes   payload;
+        bytes extraOptions;
+        bytes payload;
         address refundTo;
         uint256 expectedComposeValue;
     }
@@ -93,8 +93,8 @@ interface IUtexoSourceEntrypoint {
         uint256 amountLD,
         uint256 sourceChainId,
         uint256 destinationChainId,
-        string  destinationAddress,
-        bytes   settlementData
+        string destinationAddress,
+        bytes settlementData
     );
 
     // =========================================================================
