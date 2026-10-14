@@ -1,19 +1,22 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.35;
 
-import { IERC20 }    from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
-import { SafeERC20 } from '@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol';
-import { ReentrancyGuard } from '@openzeppelin/contracts/utils/ReentrancyGuard.sol';
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-import { IOAppComposer }      from '@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/interfaces/IOAppComposer.sol';
-import { ILayerZeroComposer } from '@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroComposer.sol';
-import { OFTComposeMsgCodec } from '@layerzerolabs/lz-evm-oapp-v2/contracts/oft/libs/OFTComposeMsgCodec.sol';
+import {IOAppComposer} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oapp/interfaces/IOAppComposer.sol";
+import {ILayerZeroComposer} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroComposer.sol";
+import {OFTComposeMsgCodec} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oft/libs/OFTComposeMsgCodec.sol";
 
-import { IOFT, SendParam }                  from '@layerzerolabs/lz-evm-oapp-v2/contracts/oft/interfaces/IOFT.sol';
-import { MessagingFee, MessagingReceipt }   from '@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol';
+import {IOFT, SendParam} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oft/interfaces/IOFT.sol";
+import {
+    MessagingFee,
+    MessagingReceipt
+} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
-import { IUtexoLZAdapter } from './interfaces/IUtexoLZAdapter.sol';
-import { IBridge }         from '@bridge-smart-contracts/interfaces/IBridge.sol';
+import {IUtexoLZAdapter} from "./interfaces/IUtexoLZAdapter.sol";
+import {IBridge} from "@bridge-smart-contracts/interfaces/IBridge.sol";
 
 /// @dev Minimal OApp-core view used to ensure a candidate local OFT is wired to
 ///      a remote peer for the EID it is being registered against.
@@ -180,18 +183,18 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         uint32[] memory oftEids_,
         address[] memory ofts_
     ) {
-        if (endpoint_      == address(0)) revert InvalidEndpoint();
-        if (token_         == address(0)) revert InvalidToken();
-        if (bridge_        == address(0)) revert InvalidBridge();
+        if (endpoint_ == address(0)) revert InvalidEndpoint();
+        if (token_ == address(0)) revert InvalidToken();
+        if (bridge_ == address(0)) revert InvalidBridge();
         if (multisigProxy_ == address(0)) revert InvalidMultisigProxy();
         if (oftEids_.length == 0) revert NoOftRoutes();
         if (oftEids_.length != ofts_.length) {
             revert OftRouteLengthMismatch(oftEids_.length, ofts_.length);
         }
 
-        endpoint      = endpoint_;
-        token         = token_;
-        bridge        = bridge_;
+        endpoint = endpoint_;
+        token = token_;
+        bridge = bridge_;
         multisigProxy = multisigProxy_;
 
         for (uint256 i; i < oftEids_.length; ++i) {
@@ -219,9 +222,10 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     function lzCompose(
         address _from,
         bytes32 _guid,
-        bytes   calldata _message,
-        address /*_executor*/,
-        bytes   calldata /*_extraData*/
+        bytes calldata _message,
+        address,
+        /*_executor*/
+        bytes calldata /*_extraData*/
     )
         external
         payable
@@ -243,13 +247,13 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         //    the single entrypoint registered for that `srcEid`; an unregistered
         //    srcEid (expected == 0) is rejected.
         bytes32 composeFrom_ = OFTComposeMsgCodec.composeFrom(_message);
-        bytes32 expected     = trustedEntrypoints[srcEid_];
+        bytes32 expected = trustedEntrypoints[srcEid_];
         if (expected == bytes32(0) || composeFrom_ != expected) {
             revert UntrustedComposeSource(srcEid_, composeFrom_);
         }
 
         // 2. Decode the LayerZero transport envelope (always well-formed).
-        uint256 amountLD     = OFTComposeMsgCodec.amountLD(_message);
+        uint256 amountLD = OFTComposeMsgCodec.amountLD(_message);
         bytes memory payload = OFTComposeMsgCodec.composeMsg(_message);
 
         // 3. Decode the business payload behind an external self-call so a
@@ -267,8 +271,15 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             uint256 expectedComposeValue
         ) {
             _composeIn(
-                _guid, srcEid_, amountLD, sourceChainId, sourceSender, destinationChainId,
-                destinationAddress, settlementData, expectedComposeValue
+                _guid,
+                srcEid_,
+                amountLD,
+                sourceChainId,
+                sourceSender,
+                destinationChainId,
+                destinationAddress,
+                settlementData,
+                expectedComposeValue
             );
         } catch {
             _parkUndecodableCompose(_guid, amountLD);
@@ -286,8 +297,8 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             uint256 sourceChainId,
             bytes32 sourceSender,
             uint256 destinationChainId,
-            string  memory destinationAddress,
-            bytes   memory settlementData,
+            string memory destinationAddress,
+            bytes memory settlementData,
             uint256 expectedComposeValue
         )
     {
@@ -301,13 +312,13 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     ///      parks. Reached only after a successful payload decode.
     function _composeIn(
         bytes32 guid,
-        uint32  srcEid_,
+        uint32 srcEid_,
         uint256 amountLD,
         uint256 sourceChainId,
         bytes32 sourceSender,
         uint256 destinationChainId,
-        string  memory destinationAddress,
-        bytes   memory settlementData,
+        string memory destinationAddress,
+        bytes memory settlementData,
         uint256 expectedComposeValue
     ) private {
         // Bound the decoded inputs before they are plumbed onward / stored.
@@ -334,17 +345,20 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         // recoverable off the hot path.
         IERC20(token).safeIncreaseAllowance(bridge, amountLD);
 
-        try IBridge(bridge).fundsIn{ value: msg.value }(
-            amountLD,
-            sourceChainId,
-            sourceSender,
-            destinationChainId,
-            destinationAddress,
-            settlementData
-        ) returns (bytes32 operationId) {
+        try IBridge(bridge).fundsIn{value: msg.value}(
+            amountLD, sourceChainId, sourceSender, destinationChainId, destinationAddress, settlementData
+        ) returns (
+            bytes32 operationId
+        ) {
             emit ComposeFundsIn(
-                guid, operationId, sourceSender, sourceChainId, amountLD,
-                destinationChainId, destinationAddress, settlementData
+                guid,
+                operationId,
+                sourceSender,
+                sourceChainId,
+                amountLD,
+                destinationChainId,
+                destinationAddress,
+                settlementData
             );
         } catch (bytes memory reason) {
             // Bridge did not pull the approved allowance — reset it so the
@@ -355,19 +369,26 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             if (_stuckFunds[guid].amountLD != 0) revert StuckFundsAlreadyExist(guid);
 
             _stuckFunds[guid] = StuckFunds({
-                amountLD:           amountLD,
-                nativeValue:        msg.value,
-                sourceSender:       sourceSender,
-                sourceChainId:      sourceChainId,
+                amountLD: amountLD,
+                nativeValue: msg.value,
+                sourceSender: sourceSender,
+                sourceChainId: sourceChainId,
                 destinationChainId: destinationChainId,
                 destinationAddress: destinationAddress,
-                settlementData:     settlementData
+                settlementData: settlementData
             });
             totalRecordedStuckToken += amountLD;
 
             emit ComposeFundsInFailed(
-                guid, sourceSender, sourceChainId, amountLD, msg.value,
-                destinationChainId, destinationAddress, settlementData, reason
+                guid,
+                sourceSender,
+                sourceChainId,
+                amountLD,
+                msg.value,
+                destinationChainId,
+                destinationAddress,
+                settlementData,
+                reason
             );
         }
     }
@@ -380,12 +401,12 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         StuckFunds storage record = _stuckFunds[guid];
         if (record.amountLD != 0) revert StuckFundsAlreadyExist(guid);
 
-        record.amountLD    = amountLD;
+        record.amountLD = amountLD;
         record.nativeValue = msg.value;
         totalRecordedStuckToken += amountLD;
 
         emit ComposeFundsInFailed(
-            guid, bytes32(0), 0, amountLD, msg.value, 0, '', '', bytes('malformed compose payload')
+            guid, bytes32(0), 0, amountLD, msg.value, 0, "", "", bytes("malformed compose payload")
         );
     }
 
@@ -394,20 +415,14 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     // =========================================================================
 
     /// @inheritdoc IUtexoLZAdapter
-    function sendOut(
-        uint32  dstEid,
-        bytes32 recipient,
-        uint256 amount,
-        uint256 minAmountLD,
-        bytes   calldata extraOptions
-    )
+    function sendOut(uint32 dstEid, bytes32 recipient, uint256 amount, uint256 minAmountLD, bytes calldata extraOptions)
         external
         payable
         override
         onlyMultisigProxy
         nonReentrant
     {
-        if (amount    == 0)          revert ZeroAmount();
+        if (amount == 0) revert ZeroAmount();
         if (recipient == bytes32(0)) revert InvalidRecipient();
 
         // A normal outbound batch first transfers fresh Bridge liquidity to
@@ -422,27 +437,27 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         //    delivering plain USDT0 to the user, not invoking any compose hook on
         //    the destination.
         SendParam memory sp = SendParam({
-            dstEid:       dstEid,
-            to:           recipient,
-            amountLD:     amount,
-            minAmountLD:  minAmountLD,
+            dstEid: dstEid,
+            to: recipient,
+            amountLD: amount,
+            minAmountLD: minAmountLD,
             extraOptions: extraOptions,
-            composeMsg:   '',
-            oftCmd:       ''
+            composeMsg: "",
+            oftCmd: ""
         });
 
         // 2. Re-quote on-chain — defends against the off-chain quote going stale
         //    between TEE signing and MultisigProxy.executeBatch inclusion.
         MessagingFee memory fee = IOFT(oft_).quoteSend(sp, false);
         if (msg.value < fee.nativeFee) {
-            revert InsufficientNativeFee({ provided: msg.value, required: fee.nativeFee });
+            revert InsufficientNativeFee({provided: msg.value, required: fee.nativeFee});
         }
 
         // 3. Approve OFT to pull the USDT0 we received from Bridge.fundsOut.
         IERC20(token).safeIncreaseAllowance(oft_, amount);
 
         // 4. Forward exactly `fee.nativeFee` to the OFT. Refund handled below.
-        (MessagingReceipt memory receipt, ) = IOFT(oft_).send{ value: fee.nativeFee }(
+        (MessagingReceipt memory receipt,) = IOFT(oft_).send{value: fee.nativeFee}(
             sp,
             fee,
             tx.origin /* refundAddress — defensive only; OFT consumes the full fee */
@@ -452,7 +467,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         //    submitted `MultisigProxy.executeBatch`.
         uint256 excess = msg.value - fee.nativeFee;
         if (excess != 0) {
-            (bool ok, ) = tx.origin.call{ value: excess }('');
+            (bool ok,) = tx.origin.call{value: excess}("");
             if (!ok) revert NativeRefundFailed();
         }
 
@@ -461,26 +476,21 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
 
     /// @inheritdoc IUtexoLZAdapter
     function quoteSendOut(
-        uint32  dstEid,
+        uint32 dstEid,
         bytes32 recipient,
         uint256 amount,
         uint256 minAmountLD,
-        bytes   calldata extraOptions
-    )
-        external
-        view
-        override
-        returns (uint256 nativeFee)
-    {
+        bytes calldata extraOptions
+    ) external view override returns (uint256 nativeFee) {
         address oft_ = _requireOftRoute(dstEid);
         SendParam memory sp = SendParam({
-            dstEid:       dstEid,
-            to:           recipient,
-            amountLD:     amount,
-            minAmountLD:  minAmountLD,
+            dstEid: dstEid,
+            to: recipient,
+            amountLD: amount,
+            minAmountLD: minAmountLD,
             extraOptions: extraOptions,
-            composeMsg:   '',
-            oftCmd:       ''
+            composeMsg: "",
+            oftCmd: ""
         });
         return IOFT(oft_).quoteSend(sp, false).nativeFee;
     }
@@ -499,12 +509,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     ///      caller. The proxy itself gates this on the M-of-N federation
     ///      timelock (see its `proposeAdminExecute*` flow). Off-chain the
     ///      backend reimburses the original user from `recipient`.
-    function refundStuckFunds(bytes32 guid, address recipient)
-        external
-        override
-        onlyMultisigProxy
-        nonReentrant
-    {
+    function refundStuckFunds(bytes32 guid, address recipient) external override onlyMultisigProxy nonReentrant {
         if (recipient == address(0)) revert InvalidRecipient();
 
         StuckFunds memory record = _stuckFunds[guid];
@@ -519,7 +524,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         // Native leg, if any. A revert here also rolls back the token transfer
         // and the delete — the record stays recoverable.
         if (record.nativeValue != 0) {
-            (bool ok, ) = recipient.call{ value: record.nativeValue }('');
+            (bool ok,) = recipient.call{value: record.nativeValue}("");
             if (!ok) revert NativeRefundFailed();
         }
 
@@ -537,12 +542,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     /// @dev Covers tokens credited by an OFT before `lzCompose` reverted on a
     ///      transport-level check, where no guid-based record could be created.
     ///      Live stuck records are protected by `totalRecordedStuckToken`.
-    function recoverUntrackedToken(address recipient, uint256 amount)
-        external
-        override
-        onlyMultisigProxy
-        nonReentrant
-    {
+    function recoverUntrackedToken(address recipient, uint256 amount) external override onlyMultisigProxy nonReentrant {
         if (recipient == address(0)) revert InvalidRecipient();
         if (amount == 0) revert ZeroAmount();
 
@@ -558,11 +558,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     // =========================================================================
 
     /// @inheritdoc IUtexoLZAdapter
-    function setOftRoute(uint32 eid, address oft_)
-        external
-        override
-        onlyMultisigProxy
-    {
+    function setOftRoute(uint32 eid, address oft_) external override onlyMultisigProxy {
         _setOftRoute(eid, oft_);
     }
 
@@ -629,7 +625,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         if (chainId == 0) revert InvalidChainId();
 
         trustedEntrypoints[srcEid] = entrypoint;
-        eidToChainId[srcEid]       = chainId;
+        eidToChainId[srcEid] = chainId;
         emit TrustedEntrypointSet(srcEid, entrypoint, chainId);
     }
 }

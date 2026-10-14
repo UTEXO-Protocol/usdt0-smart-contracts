@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.35;
 
-import { IERC20 } from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title MockBridge
 /// @notice Minimal Bridge stub for testing `UtexoLZAdapter` in isolation. Pulls
@@ -36,9 +36,9 @@ contract MockBridge {
     uint256 public lastAmount;
     uint256 public lastSourceChainId;
     uint256 public lastDestinationChainId;
-    string  public lastDestinationAddress;
+    string public lastDestinationAddress;
     bytes32 public lastSourceSender;
-    bytes   public lastSettlementData;
+    bytes public lastSettlementData;
     uint256 public lastMsgValue;
     address public lastCaller;
 
@@ -54,7 +54,7 @@ contract MockBridge {
     }
 
     function setExpectedMsgValue(uint256 expected) external {
-        checksMsgValue  = true;
+        checksMsgValue = true;
         expectedMsgValue = expected;
     }
 
@@ -72,26 +72,28 @@ contract MockBridge {
         uint256 sourceChainId,
         bytes32 sourceSender,
         uint256 destinationChainId,
-        string  calldata destinationAddress,
-        bytes   calldata settlementData
+        string calldata destinationAddress,
+        bytes calldata settlementData
     ) external payable returns (bytes32 operationId) {
-        require(!reverts, 'MockBridge: forced revert');
-        require(!checksMsgValue || msg.value == expectedMsgValue, 'MockBridge: native value mismatch');
+        require(!reverts, "MockBridge: forced revert");
+        require(!checksMsgValue || msg.value == expectedMsgValue, "MockBridge: native value mismatch");
 
         IERC20(token).transferFrom(msg.sender, address(this), amount);
 
-        lastAmount             = amount;
-        lastSourceChainId      = sourceChainId;
-        lastSourceSender       = sourceSender;
+        lastAmount = amount;
+        lastSourceChainId = sourceChainId;
+        lastSourceSender = sourceSender;
         lastDestinationChainId = destinationChainId;
         lastDestinationAddress = destinationAddress;
-        lastSettlementData     = settlementData;
-        lastMsgValue           = msg.value;
-        lastCaller             = msg.sender;
+        lastSettlementData = settlementData;
+        lastMsgValue = msg.value;
+        lastCaller = msg.sender;
 
         operationId = operationIdToReturn != bytes32(0)
             ? operationIdToReturn
-            : keccak256(abi.encode(sourceChainId, sourceSender, amount, destinationChainId, destinationAddress, settlementData));
+            : keccak256(
+                abi.encode(sourceChainId, sourceSender, amount, destinationChainId, destinationAddress, settlementData)
+            );
         lastReturnedOperationId = operationId;
     }
 
