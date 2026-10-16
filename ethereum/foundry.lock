@@ -1,6 +1,6 @@
 {
   "../lib/bridge-smart-contracts": {
-    "rev": "b234e4a405b0fce6a320ce1723af6add28bd8bf7"
+    "rev": "e49adf70224259aa745569fbbc5dabf9eeb588b8"
   },
   "lib/LayerZero-v2": {
     "rev": "9c741e7f9790639537b1710a203bcdfd73b0b9ac"
