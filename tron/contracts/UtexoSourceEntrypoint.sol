@@ -101,8 +101,7 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     ///                    where USDT0 is native this is the USDT0 token itself.
     /// @param oft_        USDT0 OFT on this chain.
     /// @param dstEid_     LayerZero endpoint id of the destination chain (Arbitrum).
-    /// @param lzAdapter_  `UtexoLZAdapter` address on the destination chain, encoded
-    ///                    as bytes32 (address left-padded, per LayerZero V2 convention).
+    /// @param lzAdapter_  Nonzero Arbitrum adapter address, left-padded with 12 zero bytes.
     /// @param initialOwner_  Address that receives ownership at deployment.
     constructor(
         address token_,
@@ -114,7 +113,7 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         if (token_ == address(0))      revert InvalidTokenAddress();
         if (oft_ == address(0))        revert InvalidOftAddress();
         if (dstEid_ == 0)              revert InvalidDstEid();
-        if (lzAdapter_ == bytes32(0))  revert InvalidLZAdapter();
+        if (lzAdapter_ == bytes32(0) || uint256(lzAdapter_) >> 160 != 0) revert InvalidLZAdapter();
 
         token     = token_;
         oft       = oft_;
