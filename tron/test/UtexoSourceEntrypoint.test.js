@@ -371,6 +371,20 @@ contract('UtexoSourceEntrypoint', () => {
       );
     });
 
+    it('reverts when the OFT serves a different token', async () => {
+      const otherToken = await deploy(MockERC20._json, 'OTHER', 'OTHER');
+      const otherOft = await deploy(MockOFT._json, otherToken.address);
+
+      await deployExpectRevert(
+        UtexoSourceEntrypoint._json,
+        token.address,
+        otherOft.address,
+        DST_EID,
+        LZ_ADAPTER,
+        ownerAccount.address.base58
+      );
+    });
+
     it('reverts on zero dstEid', async () => {
       await deployExpectRevert(
         UtexoSourceEntrypoint._json,
