@@ -15,10 +15,7 @@ import {
 } from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
 /// @title MockOFT
-/// @notice Minimal OFT stub for testing the Utexo source entrypoint and adapter in
-///         isolation. Records the last `send()` call so tests can assert that
-///         `SendParam` was forwarded byte-for-byte. Pulls the tokens to simulate the
-///         cross-chain lock.
+/// @notice OFT stub with a configurable native fee that pulls tokens and records send parameters.
 contract MockOFT is IOFT {
     address public immutable override token;
 
@@ -40,8 +37,7 @@ contract MockOFT is IOFT {
     address public lastRefundAddress;
     uint256 public lastMsgValue;
 
-    // Accessors (avoid returning the full struct to keep callers out of
-    // stack-too-deep territory).
+    // Send-parameter accessors.
     function lastDstEid() external view returns (uint32) {
         return _lastSendParam.dstEid;
     }
@@ -129,10 +125,8 @@ contract MockOFT is IOFT {
         require(msg.value == fee.nativeFee, "MockOFT: msg.value != nativeFee");
         require(fee.nativeFee == nativeFeeQuote, "MockOFT: stale fee");
 
-        // Pull tokens — proves the caller set the allowance correctly.
         IERC20(token).transferFrom(msg.sender, address(this), sendParam.amountLD);
 
-        // Record for assertions.
         _lastSendParam = sendParam;
         lastFee = fee;
         lastRefundAddress = refundAddress;

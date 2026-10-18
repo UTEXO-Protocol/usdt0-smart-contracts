@@ -5,31 +5,10 @@ import {Script, console2} from "forge-std/Script.sol";
 import {UtexoLZAdapter} from "../../src/UtexoLZAdapter.sol";
 
 /// @title DeployUtexoLZAdapter
-/// @notice Deploys `UtexoLZAdapter` on the destination chain (Arbitrum). The
-///         contract is non-upgradeable. Core wire addresses are immutable,
-///         while local OFTs are routed per LayerZero EID and can be rotated by
-///         `MultisigProxy` governance to support concurrent USDT0 meshes.
-///
-/// Env:
-///   PRIVATE_KEY              — deployer private key
-///   LZ_ENDPOINT_ADDRESS      — LayerZero V2 EndpointV2 on Arbitrum
-///   OFT_EIDS                 — comma-separated LayerZero EIDs
-///   OFT_ADDRESSES            — comma-separated local USDT0 OFTs, same order
-///   TOKEN_ADDRESS            — USDT0 token on Arbitrum
-///   BRIDGE_ADDRESS           — Utexo `Bridge` on Arbitrum
-///   MULTISIG_PROXY_ADDRESS   — Utexo `MultisigProxy` on Arbitrum
-///
-/// Usage:
-///   forge script script/deploy/DeployUtexoLZAdapter.s.sol \
-///     --rpc-url $RPC_URL --broadcast --verify
-///
-/// Post-deployment:
-///   1. Verify the four immutables and every EID/OFT route logged below.
-///   2. On the Bridge side, set `lzAdapter` to the new address via
-///      `MultisigProxy` (until that is done the adapter-only `Bridge.fundsIn`
-///      overload reverts `NotLZAdapter`).
-///   3. Bind each source EID to its source-chain `UtexoSourceEntrypoint` and
-///      business chain id via `setTrustedEntrypoint` from `MultisigProxy`.
+/// @notice Deploys the Arbitrum adapter and its initial EID-to-OFT routes.
+/// @dev Inputs: `PRIVATE_KEY`, `LZ_ENDPOINT_ADDRESS`, `TOKEN_ADDRESS`, `BRIDGE_ADDRESS`,
+///      `MULTISIG_PROXY_ADDRESS`, `OFT_EIDS`, `OFT_ADDRESSES`.
+///      Governance configures Bridge, MultisigProxy and trusted source bindings separately.
 contract DeployUtexoLZAdapter is Script {
     function run() external returns (UtexoLZAdapter adapter) {
         uint256 pk = vm.envUint("PRIVATE_KEY");

@@ -1,12 +1,6 @@
 const UtexoSourceEntrypoint = artifacts.require('UtexoSourceEntrypoint');
 
-// command example
-// npx tronbox migrate --network shasta \
-//   --token=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t \
-//   --oft=TFG4wBaDQ8sHWWP1ACeSGnoNR6RRzevLPt \
-//   --dst-eid=30110 \
-//   --lz-adapter=0x000000000000000000000000<arb-lzAdapter-address-without-0x> \
-//   --owner=<initial-owner-address>
+// Deploys a source entrypoint from --token, --oft, --dst-eid, --lz-adapter and --owner.
 
 module.exports = function (deployer, network, accounts) {
   if (network === 'development') {
