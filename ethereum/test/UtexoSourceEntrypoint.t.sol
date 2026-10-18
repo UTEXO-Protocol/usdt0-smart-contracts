@@ -107,6 +107,37 @@ contract UtexoSourceEntrypointTest is Test {
         new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, bytes32(0), owner);
     }
 
+    function test_constructor_revertsOnNonCanonicalLZAdapter() public {
+        bytes32 adapter = bytes32(uint256(LZ_ADAPTER) | (uint256(1) << 200));
+
+        vm.expectRevert(IUtexoSourceEntrypoint.InvalidLZAdapter.selector);
+        new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, adapter, owner);
+    }
+
+    function test_constructor_revertsOnNonCanonicalZeroLZAdapter() public {
+        bytes32 adapter = bytes32(uint256(1) << 160);
+
+        vm.expectRevert(IUtexoSourceEntrypoint.InvalidLZAdapter.selector);
+        new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, adapter, owner);
+    }
+
+    function testFuzz_constructor_acceptsCanonicalLZAdapter(address adapter) public {
+        vm.assume(adapter != address(0));
+        bytes32 encodedAdapter = bytes32(uint256(uint160(adapter)));
+
+        UtexoSourceEntrypoint deployed =
+            new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, encodedAdapter, owner);
+
+        assertEq(deployed.lzAdapter(), encodedAdapter);
+    }
+
+    function testFuzz_constructor_revertsOnNonCanonicalLZAdapter(bytes32 adapter) public {
+        vm.assume(uint256(adapter) >> 160 != 0);
+
+        vm.expectRevert(IUtexoSourceEntrypoint.InvalidLZAdapter.selector);
+        new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, adapter, owner);
+    }
+
     // =========================================================================
     // Ownership
     // =========================================================================

@@ -392,6 +392,30 @@ contract('UtexoSourceEntrypoint', () => {
         ownerAccount.address.base58
       );
     });
+
+    it('reverts on non-canonical lzAdapter', async () => {
+      const adapter = '0x01' + LZ_ADAPTER.slice(4);
+      await deployExpectRevert(
+        UtexoSourceEntrypoint._json,
+        token.address,
+        oft.address,
+        DST_EID,
+        adapter,
+        ownerAccount.address.base58
+      );
+    });
+
+    it('reverts on non-canonical lzAdapter with a zero EVM address', async () => {
+      const adapter = '0x' + '00'.repeat(11) + '01' + '00'.repeat(20);
+      await deployExpectRevert(
+        UtexoSourceEntrypoint._json,
+        token.address,
+        oft.address,
+        DST_EID,
+        adapter,
+        ownerAccount.address.base58
+      );
+    });
   });
 
   // ===========================================================================
