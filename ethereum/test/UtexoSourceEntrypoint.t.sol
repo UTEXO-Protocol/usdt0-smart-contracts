@@ -4,6 +4,7 @@ pragma solidity 0.8.35;
 import {Test} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {IOFT} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oft/interfaces/IOFT.sol";
 
 import {UtexoSourceEntrypoint} from "../src/UtexoSourceEntrypoint.sol";
 import {IUtexoSourceEntrypoint} from "../src/interfaces/IUtexoSourceEntrypoint.sol";
@@ -95,6 +96,36 @@ contract UtexoSourceEntrypointTest is Test {
     function test_constructor_revertsOnZeroOft() public {
         vm.expectRevert(IUtexoSourceEntrypoint.InvalidOftAddress.selector);
         new UtexoSourceEntrypoint(address(token), address(0), DST_EID, LZ_ADAPTER, owner);
+    }
+
+    function test_constructor_revertsOnOftTokenMismatch() public {
+        MockERC20 otherToken = new MockERC20("OTHER", "OTHER");
+        MockOFT otherOft = new MockOFT(address(otherToken));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IUtexoSourceEntrypoint.OftTokenMismatch.selector, address(otherOft), address(otherToken), address(token)
+            )
+        );
+        new UtexoSourceEntrypoint(address(token), address(otherOft), DST_EID, LZ_ADAPTER, owner);
+    }
+
+    function test_constructor_acceptsTokenAsOft() public {
+        vm.mockCall(address(token), abi.encodeCall(IOFT.token, ()), abi.encode(address(token)));
+
+        UtexoSourceEntrypoint deployed =
+            new UtexoSourceEntrypoint(address(token), address(token), DST_EID, LZ_ADAPTER, owner);
+
+        assertEq(deployed.token(), address(token));
+        assertEq(deployed.oft(), address(token));
+    }
+
+    function test_constructor_revertsWhenOftTokenLookupFails() public {
+        bytes memory reason = abi.encodeWithSignature("TokenLookupFailed()");
+        vm.mockCallRevert(address(oft), abi.encodeCall(IOFT.token, ()), reason);
+
+        vm.expectRevert(reason);
+        new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, LZ_ADAPTER, owner);
     }
 
     function test_constructor_revertsOnZeroEid() public {

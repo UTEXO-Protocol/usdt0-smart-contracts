@@ -53,6 +53,7 @@ interface IUtexoSourceEntrypoint {
 
     error InvalidTokenAddress();
     error InvalidOftAddress();
+    error OftTokenMismatch(address oft, address actualToken, address expectedToken);
     error InvalidLZAdapter();
     error InvalidDstEid();
     error ZeroAmount();

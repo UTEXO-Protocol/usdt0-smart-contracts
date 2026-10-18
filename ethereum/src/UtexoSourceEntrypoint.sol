@@ -102,7 +102,7 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     /// @param token_      ERC-20 that will be pulled from users and forwarded into
     ///                    the OFT. On Ethereum this is canonical USDT; on chains
     ///                    where USDT0 is native this is the USDT0 token itself.
-    /// @param oft_        USDT0 OFT on this chain.
+    /// @param oft_        USDT0 OFT on this chain; its `token()` must equal `token_`.
     /// @param dstEid_     LayerZero endpoint id of the destination chain (Arbitrum).
     /// @param lzAdapter_  Nonzero Arbitrum adapter address, left-padded with 12 zero bytes.
     /// @param initialOwner_  Address that receives ownership at deployment.
@@ -113,6 +113,9 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         if (oft_ == address(0)) revert InvalidOftAddress();
         if (dstEid_ == 0) revert InvalidDstEid();
         if (lzAdapter_ == bytes32(0) || uint256(lzAdapter_) >> 160 != 0) revert InvalidLZAdapter();
+
+        address oftToken = IOFT(oft_).token();
+        if (oftToken != token_) revert OftTokenMismatch(oft_, oftToken, token_);
 
         token = token_;
         oft = oft_;
