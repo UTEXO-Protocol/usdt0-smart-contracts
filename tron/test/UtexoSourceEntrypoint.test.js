@@ -776,6 +776,25 @@ contract('UtexoSourceEntrypoint', () => {
   // ===========================================================================
 
   describe('deposit (reverts)', () => {
+    it('reverts on zero destination chain id without moving tokens', async () => {
+      const invalidPayload = encodePayload(0, DEST_ADDR);
+      const balanceBefore = await token.balanceOf(deployerAddr).call();
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
+
+      await sendExpectRevert(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', invalidPayload, ZERO_ADDR_HEX, 0]
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
+
+      assert.equal((await token.balanceOf(deployerAddr).call()).toString(), balanceBefore.toString());
+      assert.equal((await token.balanceOf(entrypoint.address).call()).toString(), '0');
+      assert.equal((await token.balanceOf(oft.address).call()).toString(), '0');
+      assert.equal((await oft.guidCounter().call()).toString(), '0');
+    });
+
     it('reverts on zero amount', async () => {
       await sendExpectRevert(
         entrypoint.deposit(
@@ -898,6 +917,19 @@ contract('UtexoSourceEntrypoint', () => {
   // ===========================================================================
 
   describe('quote', () => {
+    it('reverts on zero destination chain id', async () => {
+      const invalidPayload = encodePayload(0, DEST_ADDR);
+      let threw = false;
+      try {
+        await entrypoint.quote(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', invalidPayload, ZERO_ADDR_HEX, 0]
+        ).call();
+      } catch (_) {
+        threw = true;
+      }
+      assert.isTrue(threw, 'quote rejects zero destination chain id');
+    });
+
     it('returns the OFT-supplied nativeFee unchanged', async () => {
       const FEE = 12_345_678;
       await sendExpectSuccess(
