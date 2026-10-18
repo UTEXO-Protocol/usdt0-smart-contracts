@@ -5,25 +5,9 @@ import {Script, console2} from "forge-std/Script.sol";
 import {UtexoSourceEntrypoint} from "../../src/UtexoSourceEntrypoint.sol";
 
 /// @title DeployUtexoSourceEntrypoint
-/// @notice Deploys `UtexoSourceEntrypoint` on a source chain (Ethereum, OP, Base, …).
-///         The contract is non-upgradeable and has owner-controlled emergency pause.
-///         To update a routing parameter, redeploy and point the frontend to the new address.
-///
-/// Env:
-///   PRIVATE_KEY          — deployer private key
-///   TOKEN_ADDRESS        — ERC-20 pulled from users (canonical USDT on Ethereum;
-///                          USDT0 token on chains where it is native)
-///   OFT_ADDRESS          — USDT0 OFT (adapter or native) on this source chain
-///   DST_EID              — LayerZero endpoint id of the destination chain
-///                          (Arbitrum = 30110)
-///   LZ_ADAPTER           — UtexoLZAdapter address on the destination chain,
-///                          left-padded to 32 bytes (bytes32)
-///                          e.g. 0x000000000000000000000000<UtexoLZAdapter address>
-///   OWNER_ADDRESS        — initial owner of the entrypoint
-///
-/// Usage:
-///   forge script script/deploy/DeployUtexoSourceEntrypoint.s.sol \
-///     --rpc-url $RPC_URL --broadcast --verify
+/// @notice Deploys a source entrypoint with the configured initial owner.
+/// @dev Inputs: `PRIVATE_KEY`, `TOKEN_ADDRESS`, `OFT_ADDRESS`, `DST_EID`, `LZ_ADAPTER`,
+///      `OWNER_ADDRESS`. The adapter is an Arbitrum address encoded as bytes32.
 contract DeployUtexoSourceEntrypoint is Script {
     function run() external returns (UtexoSourceEntrypoint entrypoint) {
         uint256 pk = vm.envUint("PRIVATE_KEY");

@@ -17,42 +17,9 @@ import {
 import {IUtexoSourceEntrypoint} from "./interfaces/IUtexoSourceEntrypoint.sol";
 
 /// @title UtexoSourceEntrypoint
-/// @notice Utexo's user-facing deposit contract on source chains (Ethereum, OP, Base, …).
-/// @dev
-///     ┌────────────┐ transferFrom  ┌────────────────────┐   OFT.send    ┌──────────────┐
-///     │  user EOA  │──────────────▶│ UtexoSource        │──────────────▶│ USDT0 OFT    │
-///     └────────────┘               │ Entrypoint (this)  │               └──────┬───────┘
-///                                  └────────────────────┘                      │
-///                                                                              │ LayerZero
-///                                                                              ▼
-///                                                               ┌──────────────────────┐
-///                                                               │ UtexoLZAdapter       │
-///                                                               │ (destination chain)  │
-///                                                               └──────────────────────┘
-///
-///     Properties:
-///       • Owner-controlled emergency pause for deposits, with two-step
-///         ownership transfers and ownership renunciation disabled.
-///       • Non-upgradeable. Replacement = redeploy.
-///       • `dstEid` and `lzAdapter` are fixed at construction and cannot be
-///         re-pointed at a different destination by the caller or anyone else.
-///       • `composeMsg` is built by the entrypoint as
-///         `abi.encode(block.chainid, sourceSender, destinationChainId, destinationAddress, settlementData, expectedComposeValue)`,
-///         where `sourceSender` is `msg.sender` left-padded to `bytes32` and the
-///         destination fields + `settlementData` are extracted from the
-///         caller-supplied `payload` blob via `abi.decode`. All chain
-///         identifiers are `uint256` (real `block.chainid` for EVM endpoints,
-///         backend-assigned ids above the EVM range). `settlementData` is an
-///         opaque blob whose layout is dictated by the destination route's
-///         `SettlementModule` on Arbitrum (for the RGB route it carries the RGB
-///         OpId as `abi.encode(uint256)`) — the entrypoint plumbs it through
-///         unchanged. A malformed `payload` reverts here on the source chain so
-///         no LZ fee is ever paid for an un-decodable compose. Both
-///         `sourceChainId` and `sourceSender` are stamped by the entrypoint and
-///         so are non-spoofable; Bridge folds `sourceSender` into the derived
-///         `operationId`.
-///       • LayerZero fee is re-quoted on-chain; surplus `msg.value` is refunded to
-///         `msg.sender`.
+/// @notice Sends source-chain deposits to the Utexo adapter on Arbitrum through USDT0 OFT.
+/// @dev Routing is immutable. The owner can pause deposits and transfer ownership in two steps.
+///      The compose payload binds the source chain and caller to the supplied destination data.
 contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -62,21 +29,12 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     // Constants
     // =========================================================================
 
-    /// @notice Upper bound on the `settlementData` byte length, mirroring
-    ///         `UtexoLZAdapter.MAX_SETTLEMENT_DATA_LENGTH`. Capping it here keeps
-    ///         an honest deposit from ever encoding an oversized blob into the
-    ///         LayerZero `composeMsg`, which the destination adapter would then
-    ///         have to bound (or strand) on the failure path. 128 bytes is ample
-    ///         for the RGB route's 32-byte `abi.encode(uint256 rgbOpId)` blob (or
-    ///         empty for routes needing none).
+    /// @notice Maximum settlement payload length, in bytes.
+    /// @dev Must not exceed the matching UtexoLZAdapter limit; oversized composes revert without a record.
     uint256 public constant MAX_SETTLEMENT_DATA_LENGTH = 128;
 
-    /// @notice Upper bound on the `destinationAddress` byte length, mirroring
-    ///         `UtexoLZAdapter.MAX_DESTINATION_ADDRESS_LENGTH` and the Bridge's
-    ///         `MAX_ADDRESS_LENGTH`. Capping it here keeps an honest deposit from
-    ///         encoding an oversized address into the LayerZero `composeMsg` that
-    ///         the destination would only reject (after fees are paid on two
-    ///         chains). 512 bytes covers every supported destination format.
+    /// @notice Maximum destination address length, in bytes.
+    /// @dev Must not exceed the matching UtexoLZAdapter limit; oversized composes revert without a record.
     uint256 public constant MAX_DESTINATION_ADDRESS_LENGTH = 512;
 
     // =========================================================================
@@ -99,13 +57,11 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     // Constructor
     // =========================================================================
 
-    /// @param token_      ERC-20 that will be pulled from users and forwarded into
-    ///                    the OFT. On Ethereum this is canonical USDT; on chains
-    ///                    where USDT0 is native this is the USDT0 token itself.
-    /// @param oft_        USDT0 OFT on this chain; its `token()` must equal `token_`.
-    /// @param dstEid_     LayerZero endpoint id of the destination chain (Arbitrum).
-    /// @param lzAdapter_  Nonzero Arbitrum adapter address, left-padded with 12 zero bytes.
-    /// @param initialOwner_  Address that receives ownership at deployment.
+    /// @param token_ Source token forwarded to the OFT.
+    /// @param oft_ Source-chain OFT; its `token()` must equal `token_`.
+    /// @param dstEid_ LayerZero EID of the destination chain (Arbitrum).
+    /// @param lzAdapter_ Nonzero Arbitrum adapter address, left-padded with 12 zero bytes.
+    /// @param initialOwner_ Initial owner; may differ from the deployer.
     constructor(address token_, address oft_, uint32 dstEid_, bytes32 lzAdapter_, address initialOwner_)
         Ownable(initialOwner_)
     {
@@ -138,23 +94,13 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     {
         if (depositParams.amountLD == 0) revert ZeroAmount();
 
-        // 1. Pull the user's tokens into this contract, then allow the OFT to pull
-        //    exactly `amountLD` on `send()`. The OFT consumes the entire allowance
-        //    via `transferFrom`;
         IERC20(token).safeTransferFrom(msg.sender, address(this), depositParams.amountLD);
         IERC20(token).safeIncreaseAllowance(oft, depositParams.amountLD);
 
-        // 2. Decode the caller's payload to validate format and extract the
-        //    destination fields, then re-encode the actual `composeMsg` with
-        //    `block.chainid` prepended. A malformed `payload` reverts here —
-        //    on the source chain, before any LZ fee is paid — so honest deposits
-        //    can never feed malformed bytes into `UtexoLZAdapter.lzCompose`.
         (uint256 destinationChainId, string memory destinationAddress, bytes memory settlementData) =
             abi.decode(depositParams.payload, (uint256, string, bytes));
         if (destinationChainId == 0) revert InvalidDestinationChainId();
 
-        // Bound the decoded inputs at the source so oversized values can never
-        // enter the cross-chain composeMsg.
         if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
             revert SettlementDataTooLong(settlementData.length, MAX_SETTLEMENT_DATA_LENGTH);
         }
@@ -162,9 +108,7 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             revert DestinationAddressTooLong(bytes(destinationAddress).length, MAX_DESTINATION_ADDRESS_LENGTH);
         }
 
-        // Stamp the authenticated source sender (the real depositor) into the
-        // composeMsg. Bridge folds it into the derived operationId; a caller
-        // cannot spoof it because it is `msg.sender`, not a payload field.
+        // Bind the source identity to the caller rather than to payload fields.
         bytes memory composeMsg = abi.encode(
             block.chainid,
             bytes32(uint256(uint160(msg.sender))),
@@ -174,8 +118,6 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             depositParams.expectedComposeValue
         );
 
-        // 3. Build the LayerZero send parameters. `dstEid` and `to` are immutable
-        //    on this contract — the caller cannot redirect the funds.
         SendParam memory sp = SendParam({
             dstEid: dstEid,
             to: lzAdapter,
@@ -186,26 +128,18 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             oftCmd: ""
         });
 
-        // 4. Re-quote the LayerZero fee on-chain. This defends against the window
-        //    between `quoteSend` off-chain and transaction inclusion, during which
-        //    LayerZero pricing may change.
+        // Re-quote before sending to use execution-time LayerZero pricing.
         MessagingFee memory fee = IOFT(oft).quoteSend(sp, false);
         if (msg.value < fee.nativeFee) {
             revert InsufficientNativeFee({provided: msg.value, required: fee.nativeFee});
         }
 
-        // 5. Resolve the native-refund target. A contract caller that cannot
-        //    receive native would otherwise have its deposit bricked on the
-        //    surplus refund, so the caller may name an explicit recipient.
         address refundTo = depositParams.refundTo == address(0) ? msg.sender : depositParams.refundTo;
 
-        // 6. Forward exactly `fee.nativeFee` to the OFT; refund surplus ourselves.
-        //    `refundTo` is passed as the OFT `refundAddress` too, though with this
-        //    call shape the OFT has no surplus to refund.
+        // The OFT receives the quoted fee; refund the remaining value separately.
         (MessagingReceipt memory receipt,) = IOFT(oft).send{value: fee.nativeFee}(sp, fee, refundTo);
         guid = receipt.guid;
 
-        // 7. Refund the native surplus (msg.value - nativeFee) to `refundTo`.
         uint256 excess = msg.value - fee.nativeFee;
         if (excess != 0) {
             (bool ok,) = refundTo.call{value: excess}("");
@@ -227,14 +161,10 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     function quote(DepositParams calldata depositParams) external view override returns (uint256 nativeFee) {
         if (depositParams.amountLD == 0) revert ZeroAmount();
 
-        // Mirror `deposit`'s payload handling so the quote covers the exact
-        // composeMsg the actual send would carry.
         (uint256 destinationChainId, string memory destinationAddress, bytes memory settlementData) =
             abi.decode(depositParams.payload, (uint256, string, bytes));
         if (destinationChainId == 0) revert InvalidDestinationChainId();
 
-        // Same caps as `deposit` so the quote reverts on exactly the inputs the
-        // send would reject.
         if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
             revert SettlementDataTooLong(settlementData.length, MAX_SETTLEMENT_DATA_LENGTH);
         }
@@ -242,8 +172,7 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             revert DestinationAddressTooLong(bytes(destinationAddress).length, MAX_DESTINATION_ADDRESS_LENGTH);
         }
 
-        // Mirror `deposit`'s composeMsg shape (size drives the fee; the
-        // sourceSender value does not affect the quote).
+        // Use the same compose encoding as deposit for fee calculation.
         bytes memory composeMsg = abi.encode(
             block.chainid,
             bytes32(uint256(uint160(msg.sender))),
@@ -278,7 +207,7 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         _unpause();
     }
 
-    /// @notice Ownership cannot be renounced to preserve access to emergency controls.
+    /// @notice Always reverts; ownership cannot be renounced.
     function renounceOwnership() public pure override {
         revert OwnershipRenunciationDisabled();
     }
