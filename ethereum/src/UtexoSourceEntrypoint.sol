@@ -225,6 +225,8 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
 
     /// @inheritdoc IUtexoSourceEntrypoint
     function quote(DepositParams calldata depositParams) external view override returns (uint256 nativeFee) {
+        if (depositParams.amountLD == 0) revert ZeroAmount();
+
         // Mirror `deposit`'s payload handling so the quote covers the exact
         // composeMsg the actual send would carry.
         (uint256 destinationChainId, string memory destinationAddress, bytes memory settlementData) =

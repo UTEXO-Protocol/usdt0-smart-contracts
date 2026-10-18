@@ -917,6 +917,18 @@ contract('UtexoSourceEntrypoint', () => {
   // ===========================================================================
 
   describe('quote', () => {
+    it('reverts on zero amount', async () => {
+      let threw = false;
+      try {
+        await entrypoint.quote(
+          ['0', '0', '0x0003', payload, ZERO_ADDR_HEX, 0]
+        ).call();
+      } catch (_) {
+        threw = true;
+      }
+      assert.isTrue(threw, 'quote rejects zero amount');
+    });
+
     it('reverts on zero destination chain id', async () => {
       const invalidPayload = encodePayload(0, DEST_ADDR);
       let threw = false;
