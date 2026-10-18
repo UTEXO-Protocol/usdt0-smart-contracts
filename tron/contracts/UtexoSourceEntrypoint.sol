@@ -234,6 +234,8 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         override
         returns (uint256 nativeFee)
     {
+        if (depositParams.amountLD == 0) revert ZeroAmount();
+
         // Mirror `deposit`'s payload handling so the quote covers the exact
         // composeMsg the actual send would carry.
         (

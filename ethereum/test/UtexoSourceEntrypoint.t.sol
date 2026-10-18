@@ -785,6 +785,13 @@ contract UtexoSourceEntrypointTest is Test {
     // Quote
     // =========================================================================
 
+    function test_quote_revertsOnZeroAmount() public {
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(0);
+
+        vm.expectRevert(IUtexoSourceEntrypoint.ZeroAmount.selector);
+        entrypoint.quote(p);
+    }
+
     function test_quote_revertsOnZeroDestinationChainId() public {
         IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
         p.payload = abi.encode(uint256(0), DEST_ADDR, abi.encode(RGB_OP_ID));
