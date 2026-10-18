@@ -56,6 +56,7 @@ interface IUtexoSourceEntrypoint {
     error OftTokenMismatch(address oft, address actualToken, address expectedToken);
     error InvalidLZAdapter();
     error InvalidDstEid();
+    error InvalidDestinationChainId();
     error ZeroAmount();
     error InsufficientNativeFee(uint256 provided, uint256 required);
     error NativeRefundFailed();

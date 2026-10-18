@@ -475,6 +475,41 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(ecv, 0, "expectedComposeValue passthrough");
     }
 
+    function test_deposit_revertsOnZeroDestinationChainId() public {
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
+        p.payload = abi.encode(uint256(0), DEST_ADDR, abi.encode(RGB_OP_ID));
+        uint256 tokenBalanceBefore = token.balanceOf(user);
+        uint256 nativeBalanceBefore = user.balance;
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        vm.expectRevert(IUtexoSourceEntrypoint.InvalidDestinationChainId.selector);
+        entrypoint.deposit{value: NATIVE_FEE}(p);
+        vm.stopPrank();
+
+        assertEq(token.balanceOf(user), tokenBalanceBefore);
+        assertEq(user.balance, nativeBalanceBefore);
+        assertEq(token.balanceOf(address(entrypoint)), 0);
+        assertEq(token.balanceOf(address(oft)), 0);
+        assertEq(token.allowance(address(entrypoint), address(oft)), 0);
+        assertEq(oft.guidCounter(), 0);
+    }
+
+    function testFuzz_depositAndQuote_acceptNonzeroDestinationChainId(uint256 destinationChainId) public {
+        vm.assume(destinationChainId != 0);
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
+        p.payload = abi.encode(destinationChainId, DEST_ADDR, abi.encode(RGB_OP_ID));
+
+        assertEq(entrypoint.quote(p), NATIVE_FEE);
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        entrypoint.deposit{value: NATIVE_FEE}(p);
+        vm.stopPrank();
+
+        assertEq(token.balanceOf(address(oft)), p.amountLD);
+    }
+
     /// @dev A malformed `payload` (cannot decode as (uint256, string, bytes))
     ///      must revert on the source chain, before the OFT pulls tokens or the
     ///      caller pays an LZ fee — preventing un-decodable composeMsgs from
@@ -749,6 +784,14 @@ contract UtexoSourceEntrypointTest is Test {
     // =========================================================================
     // Quote
     // =========================================================================
+
+    function test_quote_revertsOnZeroDestinationChainId() public {
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
+        p.payload = abi.encode(uint256(0), DEST_ADDR, abi.encode(RGB_OP_ID));
+
+        vm.expectRevert(IUtexoSourceEntrypoint.InvalidDestinationChainId.selector);
+        entrypoint.quote(p);
+    }
 
     function test_quote_matchesOft() public {
         oft.setNativeFee(0.0037 ether);

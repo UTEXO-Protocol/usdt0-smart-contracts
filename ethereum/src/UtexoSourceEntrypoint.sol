@@ -151,6 +151,7 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         //    can never feed malformed bytes into `UtexoLZAdapter.lzCompose`.
         (uint256 destinationChainId, string memory destinationAddress, bytes memory settlementData) =
             abi.decode(depositParams.payload, (uint256, string, bytes));
+        if (destinationChainId == 0) revert InvalidDestinationChainId();
 
         // Bound the decoded inputs at the source so oversized values can never
         // enter the cross-chain composeMsg.
@@ -228,6 +229,7 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         // composeMsg the actual send would carry.
         (uint256 destinationChainId, string memory destinationAddress, bytes memory settlementData) =
             abi.decode(depositParams.payload, (uint256, string, bytes));
+        if (destinationChainId == 0) revert InvalidDestinationChainId();
 
         // Same caps as `deposit` so the quote reverts on exactly the inputs the
         // send would reject.
