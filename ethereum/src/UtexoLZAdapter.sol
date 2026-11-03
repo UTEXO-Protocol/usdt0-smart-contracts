@@ -482,8 +482,8 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     function refundStuckFunds(bytes32 guid, address recipient) external override onlyMultisigProxy nonReentrant {
         if (recipient == address(0)) revert InvalidRecipient();
 
-        if (!_stuckFunds[guid].isStuck) revert NoStuckFunds(guid);
         StuckFunds memory record = _stuckFunds[guid];
+        if (!record.isStuck) revert NoStuckFunds(guid);
 
         delete _stuckFunds[guid];
         totalRecordedStuckToken -= record.amountLD;
