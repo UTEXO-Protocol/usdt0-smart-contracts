@@ -1,125 +1,114 @@
 # Utexo USDT0 Contracts — Tron
 
-Tron-side deployment of `UtexoSourceEntrypoint` for the Utexo bridge. Same Solidity sources as `ethereum/src/UtexoSourceEntrypoint.sol`, copied here so the Tron toolchain (TronBox) can build and deploy them independently of the Foundry-based EVM setup.
+Tron build of `UtexoSourceEntrypoint`. It sends source tokens through the Tron USDT0
+OFT to the Utexo adapter on Arbitrum. The contract uses the same deposit ABI as the
+Ethereum entrypoint, with Solidity 0.8.26 and TVM dependencies resolved through npm.
 
-For protocol architecture, payload format and the overall flow (source chain → USDT0 OFT → Arbitrum `UtexoLZAdapter` → `Bridge`), see the [top-level README](../README.md). This document only covers Tron-specific operations.
-
-## Contracts
-
-```
-contracts/
-├── UtexoSourceEntrypoint.sol            — production entrypoint (1:1 copy of ethereum/src/…)
-├── interfaces/IUtexoSourceEntrypoint.sol
-└── mocks/                                — test-only stubs
-    ├── MockERC20.sol
-    └── MockOFT.sol
-```
-
-`UtexoSourceEntrypoint` constructor takes four routing parameters plus an initial owner — exact same semantics as on EVM source chains:
-
-| Param | Description |
-|---|---|
-| `token` | TRC20 USDT (mainnet: `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t`) |
-| `oft` | USDT0 OFT on Tron (mainnet: `TFG4wBaDQ8sHWWP1ACeSGnoNR6RRzevLPt`) |
-| `dstEid` | LayerZero V2 destination endpoint id (Arbitrum: `30110`) |
-| `lzAdapter` | `UtexoLZAdapter` on Arbitrum, encoded as `bytes32` |
-| `initialOwner` | Initial owner of the entrypoint; use the operational multisig in production |
-
-The configured initial owner can differ from the deployer and can pause or resume deposits. Ownership
-transfers use OpenZeppelin's two-step flow, so the pending owner must call
-`acceptOwnership()`. Ownership renunciation is disabled to ensure the emergency
-pause controls always remain recoverable.
-
-## Toolchain
-
-- **TronBox 4.7.1** — pinned in `package.json`. Newer/older versions may break npm-package resolution.
-- **solc 0.8.20** with `viaIR: true` and `evmVersion: 'paris'`. The `paris` setting is mandatory: Tron's TVM does not implement the `PUSH0` opcode, so Shanghai-emitting builds would fail at runtime.
-- **Dependencies** (`@openzeppelin/contracts`, `@layerzerolabs/lz-evm-*`) are installed via npm and resolved directly from `node_modules/` by TronBox.
-
-## Prerequisites
-
-- Node.js ≥ 18
-- (For tests) Docker — to run [Tron Quickstart / TRE](https://hub.docker.com/r/tronbox/tre)
+See the [root README](../README.md) for payload encoding, native fees and recovery.
 
 ## Setup
 
+Use Node.js 20, as in CI, and install the locked dependencies:
+
 ```sh
 cd tron
-npm install
+npm ci
+npm run compile
 ```
 
-## Compile
+`package-lock.json` resolves TronBox 4.8.0. `tronbox-config.js` selects compiler 0.8.26,
+optimizer runs 200, `viaIR: true` and the Paris EVM target. Build artifacts are written
+to `build/contracts/`. The Paris target excludes Shanghai's `PUSH0`, preserving
+compatibility with TVM nodes that do not support that opcode.
+
+## Local tests
+
+`npm test` connects to the `development` network at `http://127.0.0.1:9095` by default.
+For a TRE container listening on port 9090:
 
 ```sh
-npx tronbox compile
+docker run -d --name usdt0-tron-dev -p 127.0.0.1:9095:9090 tronbox/tre
+npm test
 ```
 
-Artifacts land in `build/contracts/UtexoSourceEntrypoint.json`.
+`HOST_PORT` changes the host port used by TronBox. The development network uses the
+TRE fixture key unless `PRIVATE_KEY_DEVELOPMENT` is supplied. The migration skips
+this network because the tests deploy their own contracts and mocks.
 
-## Test
+## Deployment
 
-Tests live in `test/UtexoSourceEntrypoint.test.js` (Mocha + chai under `tronbox test`). They mirror the Foundry tests in `ethereum/test/UtexoSourceEntrypoint.t.sol` and exercise the entrypoint against `MockERC20` and `MockOFT` stubs deployed inside a local Tron node.
-
-Start a local Tron node (one-time):
-
-```sh
-docker run -d --name tre -p 9090:9090 tronbox/tre
-```
-
-Then:
-
-```sh
-npx tronbox test --network development
-```
-
-## Deploy
-
-Deployer keys are read from `.env` — copy the template:
+Copy the environment example and fill the inputs for the selected network. Token,
+OFT and owner addresses must belong to that Tron network; `LZ_ADAPTER` is the adapter
+on the destination Arbitrum network. The command below uses mainnet; testnet
+deployments need the matching destination testnet EID and adapter.
 
 ```sh
 cp .env.example .env
+set -a
+source .env
+set +a
+
+npx tronbox migrate --network mainnet \
+  --token="$TOKEN_ADDRESS" \
+  --oft="$OFT_ADDRESS" \
+  --dst-eid="$DST_EID" \
+  --lz-adapter="$LZ_ADAPTER" \
+  --owner="$OWNER_ADDRESS"
 ```
 
-Fill in the relevant `PRIVATE_KEY_<NETWORK>` (`MAINNET`, `SHASTA` or `NILE`).
+Network keys are `PRIVATE_KEY_SHASTA`, `PRIVATE_KEY_NILE` and `PRIVATE_KEY_MAINNET`.
+The migration requires all five flags:
 
-Run the migration with the four `--flag=value` parameters declared by `migrations/1_deploy_entrypoint.js`:
+| Flag | Value |
+| --- | --- |
+| `--token` | Source TRC-20 token |
+| `--oft` | Source OFT whose `token()` equals `--token` |
+| `--dst-eid` | Destination LayerZero EID; Arbitrum One uses 30110 |
+| `--lz-adapter` | `0x` + 64 hex digits: twelve zero bytes followed by the nonzero Arbitrum address |
+| `--owner` | Initial Tron owner, independent of the deployer |
 
-```sh
-npx tronbox migrate --network shasta \
-  --token=TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t \
-  --oft=TFG4wBaDQ8sHWWP1ACeSGnoNR6RRzevLPt \
-  --dst-eid=30110 \
-  --lz-adapter=0x0000000000000000000000001234567890abcdef1234567890abcdef12345678 \
-  --owner=<initial-owner-address>
+`--token`, `--oft` and `--owner` accept Tron base58 addresses. The owner can pause
+deposits and rotate ownership through `transferOwnership` and `acceptOwnership`.
+Ownership cannot be renounced; routing parameters are immutable.
+
+### Mainnet reference addresses
+
+| Contract | Tron mainnet address |
+| --- | --- |
+| TRC-20 USDT | `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t` |
+| USDT0 OFT | `TFG4wBaDQ8sHWWP1ACeSGnoNR6RRzevLPt` |
+
+See [Tether's supported protocols](https://tether.to/en/supported-protocols/) and the
+[USDT0 deployment registry](https://docs.usdt0.to/technical-documentation/deployments).
+These addresses are for mainnet; use the selected testnet's contracts for test deployments.
+
+## Registering the source on Arbitrum
+
+The adapter registration method is:
+
+```solidity
+setTrustedEntrypoint(uint32 srcEid, bytes32 entrypoint, uint256 chainId)
 ```
 
-Notes on the flags:
+Use the Tron LayerZero source EID and the `block.chainid` reported by the selected
+Tron network. To encode a Tron entrypoint for `entrypoint`, remove the `41` network
+prefix from its hex form and left-pad the remaining twenty bytes:
 
-- `--token` and `--oft` accept Tron `T...` base58 form (TronBox / TronWeb auto-convert internally).
-- `--lz-adapter` is the **destination-chain** `UtexoLZAdapter` address. Pass the full `bytes32` form (`0x` + 64 hex chars) — i.e. the 20-byte EVM address left-padded with 12 zero bytes.
-- `--owner` is independent from the deployer; use the operational multisig address in production.
-
-The `development` network is intentionally skipped by the migration — that path is owned by the test suite.
-
-## Post-deployment checklist
-
-1. **Verify immutables** via Tronscan or `tronWeb.contract(abi, addr).method().call()`: `token`, `oft`, `dstEid`, `lzAdapter` match what you passed.
-2. **Verify emergency controls** — check that `owner()` is the expected account and `paused()` is `false`.
-3. **Rotate ownership if needed** — call `transferOwnership(newOwner)`, then have the pending owner call `acceptOwnership()`.
-4. **Federation registration on Arbitrum** — the deployed entrypoint must be added to the trusted set on the destination chain. The value federation passes into `LZAdapter.setTrustedEntrypoint(bytes32, true)` is the Tron entrypoint's 20-byte EVM address left-padded to `bytes32` (i.e. `tronWeb.address.toHex(entrypointBase58).replace(/^41/, '')` left-padded). This goes through `MultisigProxy.proposeAdminExecuteAdapter` → timelock → `executeProposal`.
-5. **Backend updates** — the Utexo backend must add the Tron `block.chainid` to its `CommissionManager` route keys on Arbitrum so commissions are quoted correctly for Tron→destination deposits.
-6. **Smoke test** with a small `deposit()` on Shasta/Nile before exercising mainnet flow.
-
-## Project structure
-
+```js
+const addressHex = tronWeb.address.toHex(entrypointBase58);
+const entrypointBytes32 = '0x' + addressHex.replace(/^41/, '').padStart(64, '0');
 ```
-tron/
-├── contracts/                       — Solidity sources + mocks
-├── migrations/
-│   └── 1_deploy_entrypoint.js       — TronBox migration (CLI flags)
-├── test/
-│   └── UtexoSourceEntrypoint.test.js
-├── tronbox-config.js                — networks + compiler settings
-├── package.json                     — npm deps, tronbox pinned to 4.7.1
-└── .env.example                     — deployer keys template
+
+Register the binding through `MultisigProxy.proposeAdminExecuteAdapter`, then execute
+the proposal after its timelock. Configure the matching Bridge route and commission
+policy on Arbitrum, and verify a complete deposit with the chosen source network.
+
+## Files
+
+```text
+contracts/                  Entrypoint, interface and test mocks
+migrations/                 Deployment migration
+test/                      Local-node tests
+tronbox-config.js           Networks and compiler settings
+.env.example                Network keys and migration inputs
 ```
