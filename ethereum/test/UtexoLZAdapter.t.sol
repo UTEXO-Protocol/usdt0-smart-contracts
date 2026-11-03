@@ -5,6 +5,7 @@ import {Test} from "forge-std/Test.sol";
 import {Vm} from "forge-std/Vm.sol";
 
 import {OFTComposeMsgCodec} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oft/libs/OFTComposeMsgCodec.sol";
+import {MessagingComposer} from "@layerzerolabs/lz-evm-protocol-v2/contracts/MessagingComposer.sol";
 
 import {UtexoLZAdapter} from "../src/UtexoLZAdapter.sol";
 import {IUtexoLZAdapter} from "../src/interfaces/IUtexoLZAdapter.sol";
@@ -14,6 +15,9 @@ import {MockOFT} from "./mocks/MockOFT.sol";
 import {MockBridge} from "./mocks/MockBridge.sol";
 import {ZeroApprovalRevertingERC20} from "./mocks/ZeroApprovalRevertingERC20.sol";
 import {ZeroAmountBridge} from "./mocks/ZeroAmountBridge.sol";
+
+/// @dev Unmodified LayerZero compose queue used by message-specific recovery tests.
+contract ComposeEndpoint is MessagingComposer {}
 
 /// @title UtexoLZAdapterTest
 /// @notice Adapter authentication, forwarding, fee handling and recovery tests.
@@ -48,7 +52,12 @@ contract UtexoLZAdapterTest is Test {
 
     event TrustedEntrypointSet(uint32 indexed srcEid, bytes32 entrypoint, uint256 chainId);
     event OftRouteSet(uint32 indexed eid, address indexed oft);
-    event UntrackedTokenRecovered(address indexed recipient, uint256 amount);
+    event PendingComposeRecovered(
+        bytes32 indexed guid, bytes32 indexed composeKey, address indexed oft, address recipient, uint256 amountLD
+    );
+    event RecoveredComposeIgnored(
+        bytes32 indexed guid, bytes32 indexed composeKey, address indexed oft, uint256 refundedNative
+    );
 
     // -- Constants ------------------------------------------------------------
     uint32 constant SRC_EID = 30101; // LZ endpoint id of the inbound packet
@@ -69,7 +78,7 @@ contract UtexoLZAdapterTest is Test {
     uint256 constant RGB_OP_ID = 42;
 
     // -- Actors ---------------------------------------------------------------
-    address endpoint = makeAddr("endpoint");
+    address endpoint;
     address multisigProxy = makeAddr("multisigProxy");
     address relayer = makeAddr("relayer");
     address recipientEoa = makeAddr("recipient");
@@ -79,12 +88,15 @@ contract UtexoLZAdapterTest is Test {
     MockERC20 token;
     MockOFT oft;
     MockBridge bridge;
+    ComposeEndpoint composeEndpoint;
     UtexoLZAdapter adapter;
 
     function setUp() public {
         token = new MockERC20("USDT", "USDT");
         oft = new MockOFT(address(token));
         bridge = new MockBridge(address(token));
+        composeEndpoint = new ComposeEndpoint();
+        endpoint = address(composeEndpoint);
         oft.setNativeFee(NATIVE_FEE);
 
         oft.setPeer(SRC_EID, bytes32(uint256(1)));
@@ -101,6 +113,7 @@ contract UtexoLZAdapterTest is Test {
 
         vm.deal(endpoint, 100 ether);
         vm.deal(multisigProxy, 100 ether);
+        vm.deal(relayer, 100 ether);
 
         // Bind the fixture entrypoint and source chain id to SRC_EID.
         vm.prank(multisigProxy);
@@ -118,6 +131,7 @@ contract UtexoLZAdapterTest is Test {
         assertEq(adapter.multisigProxy(), multisigProxy, "multisigProxy");
         assertEq(adapter.oftByEid(SRC_EID), address(oft), "source oft route");
         assertEq(adapter.oftByEid(DST_EID), address(oft), "destination oft route");
+        assertTrue(adapter.knownOfts(address(oft)), "configured oft retained for recovery");
     }
 
     function test_constructor_revertsOnZeroEndpoint() public {
@@ -184,7 +198,7 @@ contract UtexoLZAdapterTest is Test {
 
         uint256 destChainId = RGB_CHAIN_ID;
         string memory destAddr = "tb1q-dest-addr";
-        bytes memory settlementData = abi.encode(RGB_OP_ID);
+        bytes memory settlementData = abi.encode(RGB_OP_ID, type(uint64).max);
 
         bytes32 opId = keccak256("derived-op-id");
         bridge.setOperationIdToReturn(opId);
@@ -517,8 +531,8 @@ contract UtexoLZAdapterTest is Test {
         assertEq(rec.sourceSender, bytes32(0), "no stuck source sender");
     }
 
-    /// @dev A zero-token failure can store native value, but refund requires a positive token amount.
-    function test_lzCompose_zeroAmountRecordsNativeButRefundReverts() public {
+    /// @dev OFT dust conversion can credit zero tokens; native value must remain refundable.
+    function test_lzCompose_zeroAmountRecordRefundsNativeValue() public {
         ZeroAmountBridge zeroBridge = new ZeroAmountBridge();
         UtexoLZAdapter zeroAdapter =
             _deploySingleRoute(endpoint, address(token), address(zeroBridge), multisigProxy, SRC_EID, address(oft));
@@ -565,12 +579,16 @@ contract UtexoLZAdapterTest is Test {
         assertEq(rec.destinationChainId, RGB_CHAIN_ID, "destination chain stored");
         assertEq(rec.destinationAddress, "tb1q-zero", "destination stored");
         assertEq(rec.settlementData, EMPTY_SETTLEMENT_DATA, "settlement data stored");
+        assertTrue(rec.isStuck, "zero-token record marked as stuck");
+        assertTrue(zeroAdapter.hasStuckFunds(guid), "zero-token record exists");
 
+        address refundTo = makeAddr("refundTo");
         vm.prank(multisigProxy);
-        vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.NoStuckFunds.selector, guid));
-        zeroAdapter.refundStuckFunds(guid, payable(makeAddr("refundTo")));
+        zeroAdapter.refundStuckFunds(guid, refundTo);
 
-        assertEq(address(zeroAdapter).balance, nativeValue, "native remains unrecovered");
+        assertEq(refundTo.balance, nativeValue, "native-only record refunded");
+        assertEq(address(zeroAdapter).balance, 0, "adapter native balance cleared");
+        assertFalse(zeroAdapter.hasStuckFunds(guid), "existence marker cleared");
     }
 
     /// @dev A caught Bridge rejection records this funded deposit and completes the compose.
@@ -688,7 +706,7 @@ contract UtexoLZAdapterTest is Test {
         assertEq(afterAttempt.destinationAddress, "first", "destAddr unchanged");
     }
 
-    function test_lzCompose_revertsOnOversizedSettlementData() public {
+    function test_lzCompose_parksOversizedSettlementDataWithoutStoringIt() public {
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);
 
@@ -702,9 +720,15 @@ contract UtexoLZAdapterTest is Test {
             abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("addr"), tooBig, uint256(0))
         );
 
+        bytes32 guid = bytes32("big-guid");
         vm.prank(endpoint);
-        vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.SettlementDataTooLong.selector, cap + 1, cap));
-        adapter.lzCompose(address(oft), bytes32("big-guid"), message, address(0), "");
+        adapter.lzCompose(address(oft), guid, message, address(0), "");
+
+        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
+        assertEq(rec.amountLD, amount, "credited amount parked");
+        assertEq(rec.destinationAddress, "addr", "bounded destination preserved");
+        assertEq(rec.settlementData, "", "oversized settlement data omitted");
+        assertEq(adapter.totalRecordedStuckToken(), amount, "parked amount reserved");
     }
 
     function test_lzCompose_acceptsSettlementDataAtMaxBoundary() public {
@@ -727,7 +751,7 @@ contract UtexoLZAdapterTest is Test {
         assertEq(adapter.getStuckFunds(bytes32("ok-guid")).amountLD, 0, "no stuck record at boundary");
     }
 
-    function test_lzCompose_revertsOnOversizedDestinationAddress() public {
+    function test_lzCompose_parksOversizedDestinationAddressWithoutStoringIt() public {
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);
 
@@ -741,9 +765,15 @@ contract UtexoLZAdapterTest is Test {
             abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, tooLong, EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
+        bytes32 guid = bytes32("long-addr-guid");
         vm.prank(endpoint);
-        vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.DestinationAddressTooLong.selector, cap + 1, cap));
-        adapter.lzCompose(address(oft), bytes32("long-addr-guid"), message, address(0), "");
+        adapter.lzCompose(address(oft), guid, message, address(0), "");
+
+        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
+        assertEq(rec.amountLD, amount, "credited amount parked");
+        assertEq(rec.destinationAddress, "", "oversized destination omitted");
+        assertEq(rec.settlementData, EMPTY_SETTLEMENT_DATA, "bounded settlement data preserved");
+        assertEq(adapter.totalRecordedStuckToken(), amount, "parked amount reserved");
     }
 
     function test_lzCompose_acceptsDestinationAddressAtMaxBoundary() public {
@@ -788,6 +818,62 @@ contract UtexoLZAdapterTest is Test {
         // Nothing parked; tokens untouched — the compose is retryable.
         assertEq(adapter.getStuckFunds(bytes32("grief")).amountLD, 0, "no stuck record");
         assertEq(token.balanceOf(address(bridge)), 0, "bridge untouched");
+    }
+
+    function test_lzCompose_valueMismatchRemainsPendingAndSucceedsOnRetry() public {
+        uint256 amount = 1e6;
+        uint256 expected = 0.01 ether;
+        bytes32 guid = bytes32("retry-value");
+        token.mint(address(adapter), amount);
+
+        bytes memory message = _encodeCompose(
+            uint64(1),
+            SRC_EID,
+            amount,
+            TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("addr"), EMPTY_SETTLEMENT_DATA, expected)
+        );
+        _queueCompose(guid, message);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IUtexoLZAdapter.ComposeValueMismatch.selector, uint256(0.005 ether), expected)
+        );
+        composeEndpoint.lzCompose{value: 0.005 ether}(address(oft), address(adapter), guid, 0, message, "");
+
+        assertEq(
+            composeEndpoint.composeQueue(address(oft), address(adapter), guid, 0),
+            keccak256(message),
+            "failed attempt remains queued"
+        );
+        assertEq(adapter.getStuckFunds(guid).amountLD, 0, "retryable mismatch not parked");
+
+        composeEndpoint.lzCompose{value: expected}(address(oft), address(adapter), guid, 0, message, "");
+        assertEq(token.balanceOf(address(bridge)), amount, "correct retry reaches Bridge");
+        assertEq(
+            composeEndpoint.composeQueue(address(oft), address(adapter), guid, 0),
+            bytes32(uint256(1)),
+            "correct retry consumes queue entry"
+        );
+    }
+
+    function test_lzCompose_cannotSpendRecordedStuckReserve() public {
+        uint256 amount = 1e6;
+        _createStuckRecord(bytes32("reserved"), amount, 0, RGB_CHAIN_ID, "addr");
+
+        bytes memory message = _encodeCompose(
+            uint64(2),
+            SRC_EID,
+            amount,
+            TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("other"), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+
+        vm.prank(endpoint);
+        vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.InsufficientUntrackedToken.selector, amount, 0));
+        adapter.lzCompose(address(oft), bytes32("other-guid"), message, address(0), "");
+
+        assertEq(token.balanceOf(address(bridge)), 0, "reserve never reaches Bridge");
+        assertEq(adapter.getStuckFunds(bytes32("reserved")).amountLD, amount, "reserve record unchanged");
     }
 
     function test_lzCompose_honestlyFundedButBridgeReverts_parksRecoverable() public {
@@ -1096,6 +1182,7 @@ contract UtexoLZAdapterTest is Test {
         assertEq(rec.destinationChainId, 0, "destinationChainId");
         assertEq(rec.destinationAddress, "", "destinationAddress");
         assertEq(rec.settlementData, "", "settlementData");
+        assertFalse(rec.isStuck, "isStuck");
     }
 
     function test_refundStuckFunds_happyPath_tokenAndNative() public {
@@ -1124,6 +1211,7 @@ contract UtexoLZAdapterTest is Test {
         // Record is gone.
         IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
         assertEq(rec.amountLD, 0, "record deleted");
+        assertFalse(rec.isStuck, "record no longer marked as stuck");
     }
 
     function test_refundStuckFunds_rejectsSecondRefundForSameGuid() public {
@@ -1191,88 +1279,209 @@ contract UtexoLZAdapterTest is Test {
         assertEq(rec.amountLD, 0, "stuck record deleted");
     }
 
-    function test_recoverUntrackedToken_recoversOnlyUnreservedBalance() public {
-        uint256 untrackedAmount = 300e6;
+    function test_recoverPendingCompose_retryCannotSpendAnotherDepositsReserve() public {
+        uint256 pendingAmount = 300e6;
         uint256 stuckAmount = 700e6;
-        bytes32 guid = bytes32("protected-stuck");
+        bytes32 stuckGuid = bytes32("protected-stuck");
+        bytes32 pendingGuid = bytes32("pending-recovery");
 
-        token.mint(address(adapter), untrackedAmount);
-        _createStuckRecord(guid, stuckAmount, 0, RGB_CHAIN_ID, "addr");
-
-        assertEq(adapter.totalRecordedStuckToken(), stuckAmount, "recorded reserve");
-        assertEq(adapter.availableUntrackedToken(), untrackedAmount, "only surplus available");
-
-        address recipient = makeAddr("recoveryRecipient");
-        vm.expectEmit(true, false, false, true, address(adapter));
-        emit UntrackedTokenRecovered(recipient, untrackedAmount);
-
-        vm.prank(multisigProxy);
-        adapter.recoverUntrackedToken(recipient, untrackedAmount);
-
-        assertEq(token.balanceOf(recipient), untrackedAmount, "surplus recovered");
-        assertEq(token.balanceOf(address(adapter)), stuckAmount, "recorded tokens protected");
-        assertEq(adapter.totalRecordedStuckToken(), stuckAmount, "reserve unchanged");
-        assertEq(adapter.getStuckFunds(guid).amountLD, stuckAmount, "record preserved");
-    }
-
-    function test_recoverUntrackedToken_revertsBeforeConsumingRecordedFunds() public {
-        uint256 untrackedAmount = 300e6;
-        uint256 stuckAmount = 700e6;
-        token.mint(address(adapter), untrackedAmount);
-        _createStuckRecord(bytes32("protected"), stuckAmount, 0, RGB_CHAIN_ID, "addr");
-
-        vm.prank(multisigProxy);
-        vm.expectRevert(
-            abi.encodeWithSelector(
-                IUtexoLZAdapter.InsufficientUntrackedToken.selector, untrackedAmount + 1, untrackedAmount
-            )
-        );
-        adapter.recoverUntrackedToken(makeAddr("recipient"), untrackedAmount + 1);
-    }
-
-    function test_recoverUntrackedToken_handlesPreRecordComposeFailure() public {
-        uint256 creditedAmount = 4_998_500;
-        token.mint(address(adapter), creditedAmount);
+        _createStuckRecord(stuckGuid, stuckAmount, 0, RGB_CHAIN_ID, "addr");
+        token.mint(address(adapter), pendingAmount);
 
         bytes memory message = _encodeCompose(
             uint64(1),
             SRC_EID,
-            creditedAmount,
+            pendingAmount,
+            TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("b"), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+        _queueCompose(pendingGuid, message);
+
+        assertEq(adapter.totalRecordedStuckToken(), stuckAmount, "recorded reserve");
+        assertEq(adapter.availableUntrackedToken(), pendingAmount, "only pending credit available");
+
+        address recipient = makeAddr("recoveryRecipient");
+        bytes32 key = adapter.composeKey(address(oft), pendingGuid, keccak256(message));
+        vm.expectEmit(true, true, true, true, address(adapter));
+        emit PendingComposeRecovered(pendingGuid, key, address(oft), recipient, pendingAmount);
+
+        vm.prank(multisigProxy);
+        adapter.recoverPendingCompose(address(oft), pendingGuid, message, recipient);
+
+        assertEq(token.balanceOf(recipient), pendingAmount, "pending credit recovered");
+        assertEq(token.balanceOf(address(adapter)), stuckAmount, "recorded tokens protected");
+        assertEq(adapter.totalRecordedStuckToken(), stuckAmount, "reserve unchanged");
+        assertEq(adapter.getStuckFunds(stuckGuid).amountLD, stuckAmount, "record preserved");
+        assertTrue(adapter.recoveredComposes(key), "terminal recovery marker stored");
+
+        // The old queue entry remains executable, but adapter acknowledges it without
+        // approving Bridge or consuming the unrelated stuck deposit.
+        uint256 retryNative = 0.003 ether;
+        uint256 relayerBalanceBefore = relayer.balance;
+        vm.expectEmit(true, true, true, true, address(adapter));
+        emit RecoveredComposeIgnored(pendingGuid, key, address(oft), retryNative);
+        vm.prank(relayer);
+        composeEndpoint.lzCompose{value: retryNative}(address(oft), address(adapter), pendingGuid, 0, message, "");
+
+        assertEq(token.balanceOf(address(bridge)), 0, "recovered compose never reaches Bridge");
+        assertEq(token.balanceOf(address(adapter)), stuckAmount, "retry leaves reserve intact");
+        assertEq(relayer.balance, relayerBalanceBefore, "retry native value refunded to executor");
+        assertEq(
+            composeEndpoint.composeQueue(address(oft), address(adapter), pendingGuid, 0),
+            bytes32(uint256(1)),
+            "endpoint consumed recovered compose"
+        );
+    }
+
+    function test_recoverPendingCompose_revertsBeforeConsumingRecordedFunds() public {
+        uint256 pendingAmount = 300e6;
+        uint256 stuckAmount = 700e6;
+        _createStuckRecord(bytes32("protected"), stuckAmount, 0, RGB_CHAIN_ID, "addr");
+
+        bytes32 guid = bytes32("underfunded-pending");
+        bytes memory message = _encodeCompose(
+            uint64(1),
+            SRC_EID,
+            pendingAmount,
+            TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("b"), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+        _queueCompose(guid, message);
+
+        vm.prank(multisigProxy);
+        vm.expectRevert(
+            abi.encodeWithSelector(IUtexoLZAdapter.InsufficientUntrackedToken.selector, pendingAmount, uint256(0))
+        );
+        adapter.recoverPendingCompose(address(oft), guid, message, makeAddr("recipient"));
+    }
+
+    function test_recoverPendingCompose_rejectsMessageHashMismatch() public {
+        uint256 amount = 4_998_500;
+        bytes32 guid = bytes32("hash-mismatch");
+        bytes memory message = _encodeCompose(
+            uint64(1),
+            SRC_EID,
+            amount,
+            TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("b"), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+        _queueCompose(guid, message);
+
+        bytes memory otherMessage = _encodeCompose(
+            uint64(2),
+            SRC_EID,
+            amount,
             TRUSTED_ENTRYPOINT_B32,
             abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("b"), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
-        // Reproduce the incident shape: OFT credit has already happened, then
-        // lzCompose rejects the local OFT before a guid record can be written.
-        vm.prank(endpoint);
-        vm.expectRevert();
-        adapter.lzCompose(makeAddr("wrong-mesh"), bytes32("pre-record"), message, address(0), "");
-        assertEq(adapter.getStuckFunds(bytes32("pre-record")).amountLD, 0, "no guid record");
-        assertEq(adapter.availableUntrackedToken(), creditedAmount, "credit recoverable");
-
-        address recipient = makeAddr("incidentRecipient");
         vm.prank(multisigProxy);
-        adapter.recoverUntrackedToken(recipient, creditedAmount);
-        assertEq(token.balanceOf(recipient), creditedAmount, "incident balance recovered");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IUtexoLZAdapter.ComposeNotPending.selector, guid, keccak256(message), keccak256(otherMessage)
+            )
+        );
+        adapter.recoverPendingCompose(address(oft), guid, otherMessage, makeAddr("recipient"));
     }
 
-    function test_recoverUntrackedToken_revertsIfNotMultisigProxy() public {
-        token.mint(address(adapter), 1e6);
+    function test_recoverPendingCompose_rejectsAbsentAndDeliveredQueueEntries() public {
+        uint256 amount = 1e6;
+        bytes32 guid = bytes32("queue-state");
+        bytes memory message = _encodeCompose(
+            uint64(1),
+            SRC_EID,
+            amount,
+            TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("b"), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+
+        vm.prank(multisigProxy);
+        vm.expectRevert(
+            abi.encodeWithSelector(IUtexoLZAdapter.ComposeNotPending.selector, guid, bytes32(0), keccak256(message))
+        );
+        adapter.recoverPendingCompose(address(oft), guid, message, makeAddr("absentRecipient"));
+
+        token.mint(address(adapter), amount);
+        _queueCompose(guid, message);
+        composeEndpoint.lzCompose(address(oft), address(adapter), guid, 0, message, "");
+
+        vm.prank(multisigProxy);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IUtexoLZAdapter.ComposeNotPending.selector, guid, bytes32(uint256(1)), keccak256(message)
+            )
+        );
+        adapter.recoverPendingCompose(address(oft), guid, message, makeAddr("deliveredRecipient"));
+    }
+
+    function test_recoverPendingCompose_revertsIfNotMultisigProxy() public {
         vm.prank(makeAddr("attacker"));
         vm.expectRevert(IUtexoLZAdapter.NotMultisigProxy.selector);
-        adapter.recoverUntrackedToken(makeAddr("recipient"), 1e6);
+        adapter.recoverPendingCompose(address(oft), bytes32("guid"), hex"00", makeAddr("recipient"));
     }
 
-    function test_recoverUntrackedToken_revertsOnZeroRecipientOrAmount() public {
-        token.mint(address(adapter), 1e6);
-
+    function test_recoverPendingCompose_revertsOnZeroRecipient() public {
         vm.prank(multisigProxy);
         vm.expectRevert(IUtexoLZAdapter.InvalidRecipient.selector);
-        adapter.recoverUntrackedToken(address(0), 1e6);
+        adapter.recoverPendingCompose(address(oft), bytes32("guid"), hex"00", address(0));
+    }
+
+    function test_recoverPendingCompose_rejectsSecondRecovery() public {
+        uint256 amount = 1e6;
+        bytes32 guid = bytes32("single-recovery");
+        bytes memory message = _encodeCompose(
+            uint64(1),
+            SRC_EID,
+            amount,
+            TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("b"), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+        token.mint(address(adapter), amount);
+        _queueCompose(guid, message);
 
         vm.prank(multisigProxy);
-        vm.expectRevert(IUtexoLZAdapter.ZeroAmount.selector);
-        adapter.recoverUntrackedToken(makeAddr("recipient"), 0);
+        adapter.recoverPendingCompose(address(oft), guid, message, makeAddr("firstRecipient"));
+
+        bytes32 key = adapter.composeKey(address(oft), guid, keccak256(message));
+        vm.prank(multisigProxy);
+        vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.ComposeAlreadyRecovered.selector, key));
+        adapter.recoverPendingCompose(address(oft), guid, message, makeAddr("secondRecipient"));
+    }
+
+    function test_recoverPendingCompose_supportsHistoricalOftAfterRouteRotation() public {
+        uint256 amount = 2e6;
+        bytes32 guid = bytes32("historical-oft");
+        bytes memory message = _encodeCompose(
+            uint64(1),
+            SRC_EID,
+            amount,
+            TRUSTED_ENTRYPOINT_B32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("b"), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+        token.mint(address(adapter), amount);
+        _queueCompose(guid, message);
+
+        MockOFT replacement = new MockOFT(address(token));
+        replacement.setPeer(SRC_EID, bytes32(uint256(0xCAFE)));
+        vm.prank(multisigProxy);
+        adapter.setOftRoute(SRC_EID, address(replacement));
+
+        address recipient = makeAddr("historicalRecipient");
+        vm.prank(multisigProxy);
+        adapter.recoverPendingCompose(address(oft), guid, message, recipient);
+        assertEq(token.balanceOf(recipient), amount, "historical credit recovered");
+
+        // Although the route now expects the replacement OFT, the terminal marker is
+        // checked first so the old queue entry can be consumed without touching Bridge.
+        composeEndpoint.lzCompose(address(oft), address(adapter), guid, 0, message, "");
+        assertEq(token.balanceOf(address(bridge)), 0, "historical retry ignored");
+    }
+
+    function test_recoverPendingCompose_rejectsOftThatWasNeverConfigured() public {
+        address unknownOft = makeAddr("unknownOft");
+        vm.prank(multisigProxy);
+        vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.OftNotKnown.selector, unknownOft));
+        adapter.recoverPendingCompose(unknownOft, bytes32("guid"), hex"00", makeAddr("recipient"));
     }
 
     function test_refundStuckFunds_decrementsRecordedReserve() public {
@@ -1455,7 +1664,7 @@ contract UtexoLZAdapterTest is Test {
     // lzCompose — trusted-entrypoint enforcement
     // =========================================================================
 
-    function test_lzCompose_revertsOnUntrustedComposeSource() public {
+    function test_lzCompose_parksUntrustedComposeSource() public {
         bytes32 attackerB32 = bytes32(uint256(0xBADBAD));
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);
@@ -1468,43 +1677,112 @@ contract UtexoLZAdapterTest is Test {
             abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("a"), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
+        bytes32 guid = bytes32("x");
         vm.prank(endpoint);
-        vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.UntrustedComposeSource.selector, SRC_EID, attackerB32));
-        adapter.lzCompose(address(oft), bytes32("x"), message, address(0), "");
+        adapter.lzCompose(address(oft), guid, message, address(0), "");
 
-        // Failed authentication preserves balances and creates no recovery record.
+        // The configured OFT already authenticated the token credit, so the permanent
+        // entrypoint mismatch is parked and the endpoint can consume the compose.
         assertEq(token.balanceOf(address(bridge)), 0, "bridge untouched");
         assertEq(token.balanceOf(address(adapter)), amount, "adapter still holds tokens");
 
-        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(bytes32("x"));
-        assertEq(rec.amountLD, 0, "no stuck record for untrusted source");
+        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
+        assertEq(rec.amountLD, amount, "credited amount parked");
+        assertEq(rec.sourceSender, bytes32(0), "untrusted business payload not decoded");
+        assertEq(adapter.totalRecordedStuckToken(), amount, "parked amount reserved");
     }
 
-    function test_lzCompose_revertsWhenTrustedEntrypointRevoked() public {
-        // Revoke the binding that `setUp` registered for SRC_EID.
-        vm.prank(multisigProxy);
-        adapter.setTrustedEntrypoint(SRC_EID, bytes32(0), 0);
+    function test_lzCompose_permanentFailureParksAndConsumesEndpointQueue() public {
+        bytes32 attackerB32 = bytes32(uint256(0xBADBAD));
+        uint256 amount = 1e6;
+        bytes32 guid = bytes32("terminal-park");
+        token.mint(address(adapter), amount);
 
         bytes memory message = _encodeCompose(
             uint64(1),
             SRC_EID,
-            1e6,
+            amount,
+            attackerB32,
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("a"), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+        _queueCompose(guid, message);
+
+        composeEndpoint.lzCompose(address(oft), address(adapter), guid, 0, message, "");
+
+        assertEq(adapter.getStuckFunds(guid).amountLD, amount, "permanent failure parked");
+        assertEq(
+            composeEndpoint.composeQueue(address(oft), address(adapter), guid, 0),
+            bytes32(uint256(1)),
+            "endpoint consumed terminal failure"
+        );
+    }
+
+    function test_lzCompose_permanentFailureCannotCreateUndercollateralizedReserve() public {
+        uint256 stuckAmount = 700e6;
+        uint256 pendingAmount = 300e6;
+        bytes32 pendingGuid = bytes32("spent-pending");
+        _createStuckRecord(bytes32("existing-reserve"), stuckAmount, 0, RGB_CHAIN_ID, "addr");
+
+        // Model an OFT credit whose compose has not executed yet.
+        token.mint(address(adapter), pendingAmount);
+        bytes memory message = _encodeCompose(
+            uint64(1),
+            SRC_EID,
+            pendingAmount,
+            bytes32(uint256(0xBADBAD)),
+            abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("a"), EMPTY_SETTLEMENT_DATA, uint256(0))
+        );
+        _queueCompose(pendingGuid, message);
+
+        // Governance spends only the currently unreserved balance. The compose credit
+        // is therefore no longer available to collateralize a new stuck record.
+        vm.prank(multisigProxy, relayer);
+        adapter.sendOut{value: NATIVE_FEE}(DST_EID, recipientB32, pendingAmount, pendingAmount, "");
+        assertEq(token.balanceOf(address(adapter)), stuckAmount, "only existing reserve remains");
+        assertEq(adapter.totalRecordedStuckToken(), stuckAmount, "existing reserve unchanged");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IUtexoLZAdapter.InsufficientUntrackedToken.selector, pendingAmount, uint256(0))
+        );
+        composeEndpoint.lzCompose(address(oft), address(adapter), pendingGuid, 0, message, "");
+
+        assertFalse(adapter.hasStuckFunds(pendingGuid), "insolvent record not created");
+        assertEq(adapter.totalRecordedStuckToken(), stuckAmount, "reserve remains solvent");
+        assertGe(token.balanceOf(address(adapter)), adapter.totalRecordedStuckToken(), "reserve fully collateralized");
+        assertEq(
+            composeEndpoint.composeQueue(address(oft), address(adapter), pendingGuid, 0),
+            keccak256(message),
+            "insolvent compose remains retryable"
+        );
+    }
+
+    function test_lzCompose_parksWhenTrustedEntrypointRevoked() public {
+        // Revoke the binding that `setUp` registered for SRC_EID.
+        vm.prank(multisigProxy);
+        adapter.setTrustedEntrypoint(SRC_EID, bytes32(0), 0);
+
+        uint256 amount = 1e6;
+        token.mint(address(adapter), amount);
+        bytes memory message = _encodeCompose(
+            uint64(1),
+            SRC_EID,
+            amount,
             TRUSTED_ENTRYPOINT_B32,
             abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("b"), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
+        bytes32 guid = bytes32("y");
         vm.prank(endpoint);
-        vm.expectRevert(
-            abi.encodeWithSelector(IUtexoLZAdapter.UntrustedComposeSource.selector, SRC_EID, TRUSTED_ENTRYPOINT_B32)
-        );
-        adapter.lzCompose(address(oft), bytes32("y"), message, address(0), "");
+        adapter.lzCompose(address(oft), guid, message, address(0), "");
+
+        assertEq(adapter.getStuckFunds(guid).amountLD, amount, "revoked route credit parked");
     }
 
     // =========================================================================
     // Source EID binding
     // =========================================================================
 
-    function test_lzCompose_revertsOnSourceChainIdMismatch() public {
+    function test_lzCompose_parksOnSourceChainIdMismatch() public {
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);
 
@@ -1519,17 +1797,18 @@ contract UtexoLZAdapterTest is Test {
             abi.encode(wrongChainId, SOURCE_SENDER, RGB_CHAIN_ID, string("addr"), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
+        bytes32 guid = bytes32("mismatch");
         vm.prank(endpoint);
-        vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.SourceChainIdMismatch.selector, SRC_EID, wrongChainId));
-        adapter.lzCompose(address(oft), bytes32("mismatch"), message, address(0), "");
+        adapter.lzCompose(address(oft), guid, message, address(0), "");
 
-        // The call reverts wholesale: no tokens moved, no stuck record created.
         assertEq(token.balanceOf(address(bridge)), 0, "bridge untouched");
         assertEq(token.balanceOf(address(adapter)), amount, "adapter still holds tokens");
-        assertEq(adapter.getStuckFunds(bytes32("mismatch")).amountLD, 0, "no stuck record");
+        IUtexoLZAdapter.StuckFunds memory rec = adapter.getStuckFunds(guid);
+        assertEq(rec.amountLD, amount, "mismatched delivery parked");
+        assertEq(rec.sourceChainId, wrongChainId, "declared source chain retained for diagnosis");
     }
 
-    function test_lzCompose_revertsWhenEntrypointTrustedForDifferentSrcEid() public {
+    function test_lzCompose_parksWhenEntrypointTrustedForDifferentSrcEid() public {
         uint32 otherEid = 40161; // not registered in setUp
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);
@@ -1548,14 +1827,13 @@ contract UtexoLZAdapterTest is Test {
             abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("addr"), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
+        bytes32 guid = bytes32("wrong-eid");
         vm.prank(endpoint);
-        vm.expectRevert(
-            abi.encodeWithSelector(IUtexoLZAdapter.UntrustedComposeSource.selector, otherEid, TRUSTED_ENTRYPOINT_B32)
-        );
-        adapter.lzCompose(address(oft), bytes32("wrong-eid"), message, address(0), "");
+        adapter.lzCompose(address(oft), guid, message, address(0), "");
 
         assertEq(token.balanceOf(address(bridge)), 0, "bridge untouched");
         assertEq(token.balanceOf(address(adapter)), amount, "adapter still holds tokens");
+        assertEq(adapter.getStuckFunds(guid).amountLD, amount, "unregistered entrypoint credit parked");
     }
 
     function test_lzCompose_succeedsWhenSrcEidEntrypointAndChainIdAllMatch() public {
@@ -1678,6 +1956,11 @@ contract UtexoLZAdapterTest is Test {
     // =========================================================================
     // Helpers
     // =========================================================================
+
+    function _queueCompose(bytes32 guid, bytes memory message) internal {
+        vm.prank(address(oft));
+        composeEndpoint.sendCompose(address(adapter), guid, 0, message);
+    }
 
     function _deploySingleRoute(
         address endpoint_,
