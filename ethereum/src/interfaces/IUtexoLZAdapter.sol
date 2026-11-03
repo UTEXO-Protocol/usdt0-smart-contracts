@@ -2,42 +2,21 @@
 pragma solidity 0.8.35;
 
 /// @title IUtexoLZAdapter
-/// @notice Bidirectional adapter between the Utexo `Bridge` and the LayerZero / USDT0 stack
-///         on Arbitrum. Handles two distinct flows:
-///
-///           • Inbound  (non-Arbitrum EVM → RGB): receives USDT0 via LayerZero compose
-///                       and calls `Bridge.fundsIn` to lock it.
-///           • Outbound (RGB → non-Arbitrum EVM): receives USDT0 from `Bridge.fundsOut`
-///                       and forwards it via `OFT.send` to the user's destination chain.
+/// @notice Arbitrum integration between the Utexo Bridge and USDT0 OFT.
 interface IUtexoLZAdapter {
     // =========================================================================
     // Types
     // =========================================================================
 
-    /// @notice Snapshot of an inbound compose payload whose `Bridge.fundsIn`
-    ///         call reverted. Held on the adapter until federation governance
-    ///         releases it via `refundStuckFunds`.
-    /// @param amountLD            USDT0 amount that the OFT minted to the adapter.
-    /// @param nativeValue         Native (wei) the LayerZero Executor forwarded
-    ///                            into `lzCompose` — non-zero on NATIVE-currency
-    ///                            commission routes, zero on TOKEN routes.
-    /// @param sourceSender        Authenticated source-chain sender from
-    ///                            `composeMsg` (left-padded to `bytes32`), stamped
-    ///                            by `UtexoSourceEntrypoint`. Bridge would have
-    ///                            folded it into `operationId` had the call
-    ///                            succeeded; kept for correlation on the failure.
-    /// @param sourceChainId       EVM chain id of the source chain, set by
-    ///                            `UtexoSourceEntrypoint` from `block.chainid` at
-    ///                            deposit time and cross-checked in `lzCompose`
-    ///                            against the transport `srcEid` via `eidToChainId`.
-    /// @param destinationChainId  Final destination chain id (`uint256`): real
-    ///                            `block.chainid` values for EVM legs, reserved
-    ///                            namespace ids above the EVM range for non-EVM
-    ///                            endpoints (e.g. RGB = 1_000_001).
-    /// @param destinationAddress  Final recipient on the destination chain.
-    /// @param settlementData      Opaque blob plumbed through to the
-    ///                            destination route's `SettlementModule.onFundsIn`
-    ///                            on the Bridge (RGB OpId for the RGB route).
+    /// @notice Failed deposit recorded during compose processing.
+    /// @dev Undecodable payloads retain only the credited amount and native value.
+    /// @param amountLD Token amount credited by the destination OFT, in local decimals.
+    /// @param nativeValue Native value received by `lzCompose`, in wei.
+    /// @param sourceSender Authenticated caller encoded by the source entrypoint.
+    /// @param sourceChainId Source `block.chainid`, checked against the EID binding.
+    /// @param destinationChainId Final destination network id; RGB uses 827166.
+    /// @param destinationAddress Destination address from the compose payload.
+    /// @param settlementData Original opaque settlement payload, retained for diagnostics.
     struct StuckFunds {
         uint256 amountLD;
         uint256 nativeValue;
@@ -85,22 +64,15 @@ interface IUtexoLZAdapter {
     // Events
     // =========================================================================
 
-    /// @notice Emitted on a successful inbound `lzCompose` → `Bridge.fundsIn` call.
-    /// @param guid                LayerZero message guid.
-    /// @param operationId         Canonical bridge-side operation id derived
-    ///                            on-chain by `Bridge.fundsIn` and returned to the
-    ///                            adapter — matches `Bridge.BridgeFundsIn.operationId`.
-    /// @param sourceSender        Authenticated source-chain sender folded into
-    ///                            `operationId` (left-padded to `bytes32`).
-    /// @param sourceChainId       EVM chain id of the source chain (from `composeMsg`,
-    ///                            set by `UtexoSourceEntrypoint` from `block.chainid`).
-    /// @param amountLD            Amount of USDT0 forwarded into the Bridge (gross).
-    /// @param destinationChainId  Target chain id (`uint256`; backend-assigned for
-    ///                            non-EVM destinations).
-    /// @param destinationAddress  Target address on the destination chain.
-    /// @param settlementData      Opaque blob forwarded to the destination
-    ///                            route's `SettlementModule.onFundsIn` on the
-    ///                            Bridge (RGB OpId for the RGB route).
+    /// @notice Emitted after Bridge accepts an inbound deposit.
+    /// @param guid LayerZero message identifier.
+    /// @param operationId Record id returned by Bridge; matches `BridgeFundsIn.operationId`.
+    /// @param sourceSender Authenticated source caller from the compose payload.
+    /// @param sourceChainId Source chain id checked against the transport binding.
+    /// @param amountLD Gross token amount passed to Bridge, in local decimals.
+    /// @param destinationChainId Final destination network id.
+    /// @param destinationAddress Destination address from the compose payload.
+    /// @param settlementData Opaque payload forwarded to the destination settlement module.
     event ComposeFundsIn(
         bytes32 indexed guid,
         bytes32 indexed operationId,
@@ -112,20 +84,16 @@ interface IUtexoLZAdapter {
         bytes settlementData
     );
 
-    /// @notice Emitted on a successful outbound `sendOut` → `OFT.send` call.
-    /// @param guid       LayerZero message guid returned by the OFT.
-    /// @param dstEid     Destination LayerZero endpoint id.
-    /// @param recipient  Recipient address on the destination chain (left-padded bytes32).
-    /// @param amountLD   Amount of USDT0 sent.
+    /// @notice Emitted after an outbound OFT send.
+    /// @param guid LayerZero message identifier returned by the OFT.
+    /// @param dstEid Destination LayerZero EID.
+    /// @param recipient Destination recipient encoded as bytes32.
+    /// @param amountLD Requested token amount before OFT fees or rounding.
     event SendOut(bytes32 indexed guid, uint32 dstEid, bytes32 recipient, uint256 amountLD);
 
-    /// @notice Emitted when `Bridge.fundsIn` reverted inside `lzCompose`. The
-    ///         minted USDT0 (and any forwarded native) is held on the adapter
-    ///         under `stuckFunds[guid]` until resolved.
-    /// @param reason Raw revert returndata from `Bridge.fundsIn` — keep as
-    ///               `bytes` because Bridge can revert with any custom error.
-    /// @dev No `operationId` here: the Bridge call reverted, so none was derived.
-    ///      `sourceSender` is carried for correlation instead.
+    /// @notice Emitted when a failed deposit is recorded for refund.
+    /// @dev Undecodable payloads leave business fields at zero or empty values.
+    /// @param reason Bridge revert data, or a diagnostic message for an undecodable payload.
     event ComposeFundsInFailed(
         bytes32 indexed guid,
         bytes32 indexed sourceSender,
@@ -138,26 +106,20 @@ interface IUtexoLZAdapter {
         bytes reason
     );
 
-    /// @notice Emitted when `refundStuckFunds` releases a stuck record to a
-    ///         recipient designated by federation governance.
+    /// @notice Emitted after a recorded deposit is refunded.
     event StuckFundsRefunded(bytes32 indexed guid, address indexed recipient, uint256 amountLD, uint256 nativeValue);
 
-    /// @notice Emitted whenever a trusted-source binding is mutated by
-    ///         federation governance.
-    /// @param srcEid     LayerZero transport source id the binding applies to.
-    /// @param entrypoint Source-chain entrypoint address as bytes32 (left-padded
-    ///                   for EVM, full 32 bytes for non-EVM chains). `bytes32(0)`
-    ///                   signals the binding was revoked.
-    /// @param chainId    Expected business `sourceChainId` for this `srcEid`
-    ///                   (`0` on revoke).
+    /// @notice Emitted when a source entrypoint and chain-id binding is set or revoked.
+    /// @param srcEid Source LayerZero EID.
+    /// @param entrypoint Encoded source entrypoint; zero revokes the binding.
+    /// @param chainId Expected source chain id; zero after revocation.
     event TrustedEntrypointSet(uint32 indexed srcEid, bytes32 entrypoint, uint256 chainId);
 
     /// @notice Emitted when the Arbitrum-side OFT route for a LayerZero EID is
     ///         registered, replaced, or revoked (`oft == address(0)`).
     event OftRouteSet(uint32 indexed eid, address indexed oft);
 
-    /// @notice Emitted when federation governance recovers tokens that reached
-    ///         the adapter before a `_stuckFunds` record could be created.
+    /// @notice Emitted after tokens outside the recorded reserve are recovered.
     event UntrackedTokenRecovered(address indexed recipient, uint256 amount);
 
     // =========================================================================
@@ -169,50 +131,42 @@ interface IUtexoLZAdapter {
     function bridge() external view returns (address);
     function multisigProxy() external view returns (address);
 
-    /// @notice Arbitrum-side OFT used for messages to/from a LayerZero EID.
-    ///         Different EIDs may use different USDT0 meshes while sharing the
-    ///         same underlying Arbitrum USDT0 token.
+    /// @notice Local OFT for a LayerZero EID; zero means the route is unconfigured.
+    /// @dev Native and legacy USDT0 meshes can use different local OFTs for the same token.
     function oftByEid(uint32 eid) external view returns (address);
 
     /// @notice Sum of token amounts reserved by live `_stuckFunds` records.
     function totalRecordedStuckToken() external view returns (uint256);
 
-    /// @notice The source-chain entrypoint (as bytes32) trusted to drive
-    ///         `lzCompose` for a given LayerZero transport `srcEid`.
-    ///         `bytes32(0)` means no entrypoint is registered for that srcEid.
+    /// @notice Source entrypoint trusted for the LayerZero EID; zero means unregistered.
+    /// @dev Matches OFT `composeFrom`, the source-side caller of `OFT.send`, encoded as bytes32.
     function trustedEntrypoints(uint32 srcEid) external view returns (bytes32);
 
-    /// @notice The business `sourceChainId` expected for a given LayerZero
-    ///         transport `srcEid`. `0` means the srcEid is unregistered.
+    /// @notice Expected source chain id for the LayerZero EID; zero means unregistered.
     function eidToChainId(uint32 srcEid) external view returns (uint256);
 
-    /// @notice Returns the stuck-funds record for a given LayerZero guid.
-    ///         `amountLD == 0` signals "no record".
+    /// @notice Returns a recorded deposit, or zeroed fields for an unknown guid.
+    /// @dev Refunds require a nonzero `amountLD`.
     function getStuckFunds(bytes32 guid) external view returns (StuckFunds memory);
 
     // =========================================================================
-    // Outbound — restricted to MultisigProxy
+    // Outbound transfers and fee quotes
     // =========================================================================
 
-    /// @notice Forward USDT0 (already held by this adapter as a result of a prior
-    ///         `Bridge.fundsOut(recipient = address(this))` leg) to a user on a
-    ///         destination LayerZero chain.
-    /// @dev Re-quotes the LayerZero fee on-chain. `msg.value` must cover the quoted
-    ///      `nativeFee`; any surplus is refunded to `tx.origin` (the relayer EOA
-    ///      that submitted `MultisigProxy.executeBatch`).
-    /// @param dstEid       Destination LayerZero endpoint id.
-    /// @param recipient    Recipient on destination chain (address left-padded to bytes32).
-    /// @param amount       Amount of USDT0 to send.
-    /// @param minAmountLD  Slippage guard.
-    /// @param extraOptions LayerZero executor options (`lzReceiveOption` only — no compose).
-    /// @dev The LayerZero message guid is published only via the `SendOut`
-    ///      event — the sole authorised caller (`MultisigProxy.executeBatch`)
-    ///      cannot consume a return value anyway.
+    /// @notice Sends adapter-held tokens through the configured OFT. Callable only by MultisigProxy.
+    /// @dev Recorded stuck-token reserves are excluded. Surplus native value goes to `tx.origin`.
+    ///      Unreserved tokens can include credits awaiting compose execution.
+    /// @param dstEid Destination LayerZero EID.
+    /// @param recipient Destination recipient encoded as bytes32.
+    /// @param amount Requested token amount in local decimals.
+    /// @param minAmountLD Minimum destination amount accepted by the OFT, in local decimals.
+    /// @param extraOptions LayerZero executor options.
     function sendOut(uint32 dstEid, bytes32 recipient, uint256 amount, uint256 minAmountLD, bytes calldata extraOptions)
         external
         payable;
 
-    /// @notice Convenience re-export of `OFT.quoteSend` for the outbound shape.
+    /// @notice Quotes the LayerZero native fee for an outbound token transfer.
+    /// @dev Does not check caller authorization or the adapter's available balance.
     function quoteSendOut(
         uint32 dstEid,
         bytes32 recipient,
@@ -225,48 +179,38 @@ interface IUtexoLZAdapter {
     // Stuck-funds recovery
     // =========================================================================
 
-    /// @notice Releases a stuck record to `recipient`, transferring both the
-    ///         held USDT0 and any held native value. Callable only by
-    ///         `multisigProxy` — federation governance gates this on the
-    ///         proxy side (timelock + M-of-N).
-    /// @param guid      LayerZero compose guid whose record to refund.
-    /// @param recipient Destination for the refund (non-zero).
+    /// @notice Refunds a recorded deposit to a nonzero recipient. Callable only by MultisigProxy.
+    /// @dev Requires a nonzero token amount. Transfers tokens and recorded native value atomically;
+    ///      a failed transfer preserves the record and reserve counter.
+    /// @param guid LayerZero message identifier for the record.
+    /// @param recipient Refund recipient on Arbitrum.
     function refundStuckFunds(bytes32 guid, address recipient) external;
 
-    /// @notice Amount of adapter-held USDT0 that is not reserved by a live
-    ///         `_stuckFunds` record and can therefore be recovered separately.
+    /// @notice Returns token balance above the recorded stuck-token reserve, or zero.
+    /// @dev This includes OFT credits whose compose has not executed.
     function availableUntrackedToken() external view returns (uint256);
 
-    /// @notice Recovers USDT0 credited before `lzCompose` could create a stuck
-    ///         record. Cannot consume balances reserved by recorded failures.
+    /// @notice Recovers unreserved tokens to a nonzero recipient. Callable only by MultisigProxy.
+    /// @dev Also covers credits whose compose cannot pass validation before a record is created.
+    ///      Does not distinguish pending compose credits from other unreserved tokens.
     function recoverUntrackedToken(address recipient, uint256 amount) external;
 
     // =========================================================================
     // OFT route registry
     // =========================================================================
 
-    /// @notice Registers, replaces, or revokes the local OFT for `eid`.
-    ///         A non-zero OFT must expose the adapter token and have a peer for
-    ///         `eid`. Pass `address(0)` to revoke the route.
+    /// @notice Sets the local OFT for an EID, or revokes it with zero. Callable only by MultisigProxy.
+    /// @dev A nonzero OFT must contain code, serve the adapter token and have a nonzero peer for the EID.
     function setOftRoute(uint32 eid, address oft) external;
 
     // =========================================================================
     // Trusted entrypoint registry
     // =========================================================================
 
-    /// @notice Registers or revokes the trusted source binding for a LayerZero
-    ///         transport `srcEid`. `lzCompose` requires the inbound packet's
-    ///         `composeFrom` (the `msg.sender` of the original `OFT.send` on the
-    ///         source chain, preserved by the OFT protocol) to equal `entrypoint`
-    ///         AND the payload's self-declared `sourceChainId` to equal `chainId`
-    ///         — otherwise the call reverts. Both halves are written atomically.
-    ///         Callable only by `multisigProxy`, so changes go through federation
-    ///         governance.
-    /// @param srcEid     LayerZero transport source id this binding applies to. Non-zero.
-    /// @param entrypoint Source-chain entrypoint address as bytes32 (left-padded
-    ///                   for EVM, full 32 bytes for non-EVM chains). Pass
-    ///                   `bytes32(0)` to revoke the binding for `srcEid`.
-    /// @param chainId    Expected business `sourceChainId` for this `srcEid`.
-    ///                   Must be non-zero when registering (ignored on revoke).
+    /// @notice Sets a source entrypoint and chain-id binding. Callable only by MultisigProxy.
+    /// @dev A zero entrypoint revokes both values. Otherwise both `srcEid` and `chainId` must be nonzero.
+    /// @param srcEid Source LayerZero EID; must be nonzero even when revoking.
+    /// @param entrypoint Source-side caller of `OFT.send` (`composeFrom`), encoded as bytes32.
+    /// @param chainId Source chain id expected in the compose payload.
     function setTrustedEntrypoint(uint32 srcEid, bytes32 entrypoint, uint256 chainId) external;
 }

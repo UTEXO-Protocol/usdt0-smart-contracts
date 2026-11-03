@@ -4,32 +4,19 @@ pragma solidity 0.8.35;
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 /// @title MockBridge
-/// @notice Minimal Bridge stub for testing `UtexoLZAdapter` in isolation. Pulls
-///         the locked tokens via `transferFrom` (proves the caller set the
-///         allowance) and records the call args + forwarded `msg.value` so
-///         tests can assert byte-for-byte forwarding.
-///
-/// @dev    Implements only the adapter-only `fundsIn` overload that
-///         `UtexoLZAdapter.lzCompose` invokes. Not declared as `IBridge` —
-///         Solidity dispatches by selector at runtime, so a matching function
-///         signature on this stub is sufficient. The full upstream `IBridge`
-///         lives in the bridge-smart-contracts submodule and would require
-///         stubbing many unrelated members (`fundsOut`, `setLZAdapter`, …)
-///         that the adapter never calls in tests.
+/// @notice Deposit stub that records inputs and optionally rejects calls.
+/// @dev Implements only the adapter-facing fundsIn overload.
 contract MockBridge {
     address public immutable token;
 
     /// Force `fundsIn` to revert — used by failure-path tests.
     bool public reverts;
 
-    /// Optional exact native value expectation — used to model Bridge native
-    /// commission mismatch without pulling in the real Bridge dependency.
+    /// @notice Whether deposits must match the configured native value.
     bool public checksMsgValue;
     uint256 public expectedMsgValue;
 
-    /// @notice When non-zero, `fundsIn` returns this fixed operationId so tests
-    ///         can assert the value the adapter surfaces on `ComposeFundsIn`.
-    ///         Otherwise `fundsIn` returns a deterministic keccak derivation.
+    /// @notice Optional operation-id override; zero selects the mock's deterministic derivation.
     bytes32 public operationIdToReturn;
 
     // Last-call recording -----------------------------------------------------
@@ -42,7 +29,7 @@ contract MockBridge {
     uint256 public lastMsgValue;
     address public lastCaller;
 
-    /// @notice The operationId the last `fundsIn` call returned — assertable by tests.
+    /// @notice Operation id returned by the last successful deposit.
     bytes32 public lastReturnedOperationId;
 
     constructor(address token_) {
@@ -62,11 +49,7 @@ contract MockBridge {
         operationIdToReturn = v;
     }
 
-    /// @notice Mirrors the adapter-only overload
-    ///         `Bridge.fundsIn(uint256 amount, uint256 sourceChainId,
-    ///                         bytes32 sourceSender, uint256 destinationChainId,
-    ///                         string destinationAddress, bytes settlementData)
-    ///                         returns (bytes32 operationId)`.
+    /// @notice Pulls tokens and records the adapter deposit parameters.
     function fundsIn(
         uint256 amount,
         uint256 sourceChainId,

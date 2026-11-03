@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.35;
 
-/// @dev Minimal Bridge-shaped mock that rejects zero amount like the real Bridge
-///      adapter overload does via its minimum-amount guard.
+/// @dev Deposit stub that rejects a zero token amount.
 contract ZeroAmountBridge {
     error AmountBelowMinimum(uint256 amount, uint256 minimum);
 
-    function fundsIn(uint256 amount, uint256, uint256, string calldata, uint256, bytes calldata) external payable {
+    function fundsIn(uint256 amount, uint256, bytes32, uint256, string calldata, bytes calldata)
+        external
+        payable
+        returns (bytes32)
+    {
         if (amount == 0) revert AmountBelowMinimum(0, 1);
+        return bytes32(0);
     }
 
     receive() external payable {}
