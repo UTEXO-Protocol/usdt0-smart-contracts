@@ -4,6 +4,7 @@ pragma solidity 0.8.35;
 import {Test} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
+import {IOFT} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oft/interfaces/IOFT.sol";
 
 import {UtexoSourceEntrypoint} from "../src/UtexoSourceEntrypoint.sol";
 import {IUtexoSourceEntrypoint} from "../src/interfaces/IUtexoSourceEntrypoint.sol";
@@ -12,9 +13,7 @@ import {MockERC20} from "./mocks/MockERC20.sol";
 import {MockOFT} from "./mocks/MockOFT.sol";
 
 /// @title UtexoSourceEntrypointTest
-/// @notice Verifies that `UtexoSourceEntrypoint` forwards deposits into the OFT
-///         with immutable destination parameters, enforces the on-chain fee quote,
-///         refunds surplus native, and never holds tokens after a call.
+/// @notice Source entrypoint configuration, deposit forwarding, fees and ownership tests.
 contract UtexoSourceEntrypointTest is Test {
     event Deposit(
         bytes32 indexed guid,
@@ -27,16 +26,12 @@ contract UtexoSourceEntrypointTest is Test {
     );
 
     // -- Business payload constants (entrypoint decodes these from `payload`) --
-    /// @dev Reserved-range id for the RGB endpoint (non-EVM). Anything above
-    ///      the real EVM range is fine — backend owns this namespace.
+    /// @dev Synthetic destination id encoded in deposit payload fixtures.
     uint256 constant DEST_CHAIN_ID = 1_000_001;
     string constant DEST_ADDR = "tb1q-dest-addr";
-    /// @dev RGB OpId carried inside `settlementData` (`abi.encode(uint256 rgbOpId)`)
-    ///      on the RGB route — it is no longer a standalone payload field.
+    /// @dev RGB mint OpId used in settlement-payload fixtures.
     uint256 constant RGB_OP_ID = 42;
-    /// @dev Default settlementData for LZ-adapter flows: the route is registered
-    ///      with `NullSettlementModule` on the destination side, so the blob is
-    ///      empty. Non-empty values are exercised in `test_deposit_settlementData_roundTrips`.
+    /// @dev Empty payload fixture; the OFT mock does not validate settlement semantics.
     bytes constant EMPTY_SETTLEMENT_DATA = "";
 
     // -- Constants ------------------------------------------------------------
@@ -97,6 +92,36 @@ contract UtexoSourceEntrypointTest is Test {
         new UtexoSourceEntrypoint(address(token), address(0), DST_EID, LZ_ADAPTER, owner);
     }
 
+    function test_constructor_revertsOnOftTokenMismatch() public {
+        MockERC20 otherToken = new MockERC20("OTHER", "OTHER");
+        MockOFT otherOft = new MockOFT(address(otherToken));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IUtexoSourceEntrypoint.OftTokenMismatch.selector, address(otherOft), address(otherToken), address(token)
+            )
+        );
+        new UtexoSourceEntrypoint(address(token), address(otherOft), DST_EID, LZ_ADAPTER, owner);
+    }
+
+    function test_constructor_acceptsTokenAsOft() public {
+        vm.mockCall(address(token), abi.encodeCall(IOFT.token, ()), abi.encode(address(token)));
+
+        UtexoSourceEntrypoint deployed =
+            new UtexoSourceEntrypoint(address(token), address(token), DST_EID, LZ_ADAPTER, owner);
+
+        assertEq(deployed.token(), address(token));
+        assertEq(deployed.oft(), address(token));
+    }
+
+    function test_constructor_revertsWhenOftTokenLookupFails() public {
+        bytes memory reason = abi.encodeWithSignature("TokenLookupFailed()");
+        vm.mockCallRevert(address(oft), abi.encodeCall(IOFT.token, ()), reason);
+
+        vm.expectRevert(reason);
+        new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, LZ_ADAPTER, owner);
+    }
+
     function test_constructor_revertsOnZeroEid() public {
         vm.expectRevert(IUtexoSourceEntrypoint.InvalidDstEid.selector);
         new UtexoSourceEntrypoint(address(token), address(oft), 0, LZ_ADAPTER, owner);
@@ -105,6 +130,37 @@ contract UtexoSourceEntrypointTest is Test {
     function test_constructor_revertsOnZeroLZAdapter() public {
         vm.expectRevert(IUtexoSourceEntrypoint.InvalidLZAdapter.selector);
         new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, bytes32(0), owner);
+    }
+
+    function test_constructor_revertsOnNonCanonicalLZAdapter() public {
+        bytes32 adapter = bytes32(uint256(LZ_ADAPTER) | (uint256(1) << 200));
+
+        vm.expectRevert(IUtexoSourceEntrypoint.InvalidLZAdapter.selector);
+        new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, adapter, owner);
+    }
+
+    function test_constructor_revertsOnNonCanonicalZeroLZAdapter() public {
+        bytes32 adapter = bytes32(uint256(1) << 160);
+
+        vm.expectRevert(IUtexoSourceEntrypoint.InvalidLZAdapter.selector);
+        new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, adapter, owner);
+    }
+
+    function testFuzz_constructor_acceptsCanonicalLZAdapter(address adapter) public {
+        vm.assume(adapter != address(0));
+        bytes32 encodedAdapter = bytes32(uint256(uint160(adapter)));
+
+        UtexoSourceEntrypoint deployed =
+            new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, encodedAdapter, owner);
+
+        assertEq(deployed.lzAdapter(), encodedAdapter);
+    }
+
+    function testFuzz_constructor_revertsOnNonCanonicalLZAdapter(bytes32 adapter) public {
+        vm.assume(uint256(adapter) >> 160 != 0);
+
+        vm.expectRevert(IUtexoSourceEntrypoint.InvalidLZAdapter.selector);
+        new UtexoSourceEntrypoint(address(token), address(oft), DST_EID, adapter, owner);
     }
 
     // =========================================================================
@@ -261,8 +317,7 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(oft.lastMsgValue(), NATIVE_FEE, "msg.value forwarded");
         assertEq(oft.lastRefundAddress(), user, "refund addr");
 
-        // Entrypoint rewrote `composeMsg` with `block.chainid` + authenticated
-        // sourceSender (the depositor) prepended.
+        // Check the source identity added by the entrypoint.
         bytes memory expectedComposeMsg = abi.encode(
             block.chainid, bytes32(uint256(uint160(user))), DEST_CHAIN_ID, DEST_ADDR, abi.encode(RGB_OP_ID), uint256(0)
         );
@@ -291,10 +346,6 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(address(entrypoint).balance, 0, "no native residue");
     }
 
-    /// @dev `extraOptions` is the only `bytes` field passed through unchanged.
-    ///      `payload` is decoded and recombined with `block.chainid`, so it is
-    ///      NOT byte-equal to `oft.lastComposeMsg()` — that case is exercised
-    ///      by `test_deposit_happyPath_forwardsAndEmits`.
     function test_deposit_forwardsExtraOptionsUnchanged() public {
         bytes memory extra = hex"0003010011010000000000000000000000000000ea60";
         IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
@@ -315,12 +366,6 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(oft.lastOftCmd().length, 0, "oftCmd is always empty");
     }
 
-    /// @dev Non-empty `settlementData` must round-trip byte-for-byte through the
-    ///      payload → composeMsg pipeline so the destination route's
-    ///      `SettlementModule.onFundsIn` sees exactly what the caller intended.
-    ///      LZ-adapter flows default to empty data (NullSettlementModule), but
-    ///      future routes (or future settlement modules) may consume a non-empty
-    ///      blob and the entrypoint must not lose or mangle it.
     function test_deposit_settlementData_roundTrips() public {
         bytes memory blob = hex"deadbeefcafebabe1122334455667788";
         IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
@@ -354,8 +399,6 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(oft.lastComposeMsg(), expectedComposeMsg, "composeMsg carries settlementData");
     }
 
-    /// @dev Deposit binds `expectedComposeValue` into `composeMsg` so the
-    ///      destination adapter can enforce the funded native value.
     function test_deposit_bindsExpectedComposeValueIntoComposeMsg() public {
         uint256 ecv = 0.02 ether;
         IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
@@ -378,12 +421,7 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(oft.lastComposeMsg(), expectedComposeMsg, "composeMsg carries expectedComposeValue");
     }
 
-    /// @dev The entrypoint stamps the authenticated source sender
-    ///      (`msg.sender` left-padded to bytes32) into the composeMsg's second
-    ///      field. The value comes from `msg.sender`, not from any payload
-    ///      field, so a caller cannot spoof it — regardless of payload contents.
     function test_deposit_composeMsgCarriesAuthenticatedSourceSender() public {
-        // A distinct depositor proves the stamped value tracks msg.sender.
         address depositor = makeAddr("depositor");
         token.mint(depositor, 100e6);
         vm.deal(depositor, 1 ether);
@@ -395,7 +433,6 @@ contract UtexoSourceEntrypointTest is Test {
         entrypoint.deposit{value: NATIVE_FEE}(p);
         vm.stopPrank();
 
-        // Decode the built composeMsg and assert its sourceSender field.
         (
             uint256 chainId,
             bytes32 sourceSender,
@@ -413,10 +450,42 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(ecv, 0, "expectedComposeValue passthrough");
     }
 
-    /// @dev A malformed `payload` (cannot decode as (uint256, string, bytes))
-    ///      must revert on the source chain, before the OFT pulls tokens or the
-    ///      caller pays an LZ fee — preventing un-decodable composeMsgs from
-    ///      ever being delivered to `UtexoLZAdapter.lzCompose`.
+    function test_deposit_revertsOnZeroDestinationChainId() public {
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
+        p.payload = abi.encode(uint256(0), DEST_ADDR, abi.encode(RGB_OP_ID));
+        uint256 tokenBalanceBefore = token.balanceOf(user);
+        uint256 nativeBalanceBefore = user.balance;
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        vm.expectRevert(IUtexoSourceEntrypoint.InvalidDestinationChainId.selector);
+        entrypoint.deposit{value: NATIVE_FEE}(p);
+        vm.stopPrank();
+
+        assertEq(token.balanceOf(user), tokenBalanceBefore);
+        assertEq(user.balance, nativeBalanceBefore);
+        assertEq(token.balanceOf(address(entrypoint)), 0);
+        assertEq(token.balanceOf(address(oft)), 0);
+        assertEq(token.allowance(address(entrypoint), address(oft)), 0);
+        assertEq(oft.guidCounter(), 0);
+    }
+
+    function testFuzz_depositAndQuote_acceptNonzeroDestinationChainId(uint256 destinationChainId) public {
+        vm.assume(destinationChainId != 0);
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
+        p.payload = abi.encode(destinationChainId, DEST_ADDR, abi.encode(RGB_OP_ID));
+
+        assertEq(entrypoint.quote(p), NATIVE_FEE);
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        entrypoint.deposit{value: NATIVE_FEE}(p);
+        vm.stopPrank();
+
+        assertEq(token.balanceOf(address(oft)), p.amountLD);
+    }
+
+    /// @dev Malformed payloads roll back source token transfers before OFT submission.
     function test_deposit_revertsOnMalformedPayload() public {
         IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
             amountLD: 10e6,
@@ -430,19 +499,16 @@ contract UtexoSourceEntrypointTest is Test {
         vm.startPrank(user);
         token.approve(address(entrypoint), p.amountLD);
 
-        // Abi.decode reverts with no data on insufficient input.
+        // `abi.decode` reverts with no data on insufficient input.
         vm.expectRevert();
         entrypoint.deposit{value: NATIVE_FEE}(p);
         vm.stopPrank();
 
-        // No token transfer happened, no LZ fee paid.
+        // The reverted transaction leaves no token movement or LayerZero fee payment.
         assertEq(token.balanceOf(address(oft)), 0, "oft untouched");
         assertEq(token.balanceOf(address(entrypoint)), 0, "entrypoint did not pull");
     }
 
-    /// @dev Deposit rejects an oversized settlementData before pulling
-    ///      tokens or paying any LZ fee, so an oversized blob never enters the
-    ///      cross-chain composeMsg.
     function test_deposit_revertsOnOversizedSettlementData() public {
         uint256 cap = entrypoint.MAX_SETTLEMENT_DATA_LENGTH();
         IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
@@ -464,7 +530,6 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(token.balanceOf(address(entrypoint)), 0, "entrypoint did not pull");
     }
 
-    /// @dev SettlementData exactly at the cap deposits fine.
     function test_deposit_acceptsSettlementDataAtMaxBoundary() public {
         IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
             amountLD: 10e6,
@@ -483,8 +548,6 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(guid, keccak256(abi.encode("mock-guid", uint64(1))), "deposit succeeds at cap boundary");
     }
 
-    /// @dev Quote applies the same cap so it reverts on exactly the
-    ///      input the matching deposit would reject.
     function test_quote_revertsOnOversizedSettlementData() public {
         uint256 cap = entrypoint.MAX_SETTLEMENT_DATA_LENGTH();
         IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
@@ -500,8 +563,6 @@ contract UtexoSourceEntrypointTest is Test {
         entrypoint.quote(p);
     }
 
-    /// @dev Deposit rejects an oversized destinationAddress before
-    ///      pulling tokens or paying any LZ fee.
     function test_deposit_revertsOnOversizedDestinationAddress() public {
         uint256 cap = entrypoint.MAX_DESTINATION_ADDRESS_LENGTH();
         IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
@@ -523,7 +584,6 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(token.balanceOf(address(entrypoint)), 0, "entrypoint did not pull");
     }
 
-    /// @dev DestinationAddress exactly at the cap deposits fine.
     function test_deposit_acceptsDestinationAddressAtMaxBoundary() public {
         IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
             amountLD: 10e6,
@@ -544,7 +604,6 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(guid, keccak256(abi.encode("mock-guid", uint64(1))), "deposit succeeds at cap boundary");
     }
 
-    /// @dev Quote applies the same cap as deposit.
     function test_quote_revertsOnOversizedDestinationAddress() public {
         uint256 cap = entrypoint.MAX_DESTINATION_ADDRESS_LENGTH();
         IUtexoSourceEntrypoint.DepositParams memory p = IUtexoSourceEntrypoint.DepositParams({
@@ -628,8 +687,6 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(token.balanceOf(address(oft)), p.amountLD, "tokens forwarded");
     }
 
-    /// @dev Surplus is refunded to the explicit `refundTo`, not to the caller.
-    ///      Frontends pass the connected user's wallet here.
     function test_deposit_surplusRefundedToExplicitRefundTo() public {
         address refundDest = makeAddr("refundDest");
         IUtexoSourceEntrypoint.DepositParams memory p = _params(250e6);
@@ -649,9 +706,6 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(address(entrypoint).balance, 0, "no native residue");
     }
 
-    /// @dev A contract caller that cannot receive native is NOT
-    ///      bricked when it names a native-capable `refundTo` — surplus goes
-    ///      there and the deposit completes.
     function test_deposit_contractCallerNotBrickedWithExplicitRefundTo() public {
         RejectingRecipient rec = new RejectingRecipient(entrypoint, token);
         token.mint(address(rec), 100e6);
@@ -668,9 +722,6 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(token.balanceOf(address(oft)), p.amountLD, "tokens forwarded");
     }
 
-    /// @dev Pointing `refundTo` at a contract that rejects native still reverts —
-    ///      the parameter consciously controls the target, so a bad choice is the
-    ///      integrator's responsibility rather than a silent default brick.
     function test_deposit_explicitRefundToRejectingNative_reverts() public {
         RejectingRecipient bad = new RejectingRecipient(entrypoint, token);
 
@@ -687,6 +738,21 @@ contract UtexoSourceEntrypointTest is Test {
     // =========================================================================
     // Quote
     // =========================================================================
+
+    function test_quote_revertsOnZeroAmount() public {
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(0);
+
+        vm.expectRevert(IUtexoSourceEntrypoint.ZeroAmount.selector);
+        entrypoint.quote(p);
+    }
+
+    function test_quote_revertsOnZeroDestinationChainId() public {
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
+        p.payload = abi.encode(uint256(0), DEST_ADDR, abi.encode(RGB_OP_ID));
+
+        vm.expectRevert(IUtexoSourceEntrypoint.InvalidDestinationChainId.selector);
+        entrypoint.quote(p);
+    }
 
     function test_quote_matchesOft() public {
         oft.setNativeFee(0.0037 ether);
@@ -711,8 +777,7 @@ contract UtexoSourceEntrypointTest is Test {
     }
 }
 
-/// @dev Contract that rejects plain-ether transfers. Used to force the
-///      `NativeRefundFailed` branch.
+/// @dev Caller fixture that rejects native refunds.
 contract RejectingRecipient {
     UtexoSourceEntrypoint immutable ep;
     MockERC20 immutable tk;

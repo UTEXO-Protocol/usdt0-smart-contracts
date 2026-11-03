@@ -16,9 +16,7 @@ import {ZeroApprovalRevertingERC20} from "./mocks/ZeroApprovalRevertingERC20.sol
 import {ZeroAmountBridge} from "./mocks/ZeroAmountBridge.sol";
 
 /// @title UtexoLZAdapterTest
-/// @notice Verifies the inbound (`lzCompose` → `Bridge.fundsIn`) and outbound
-///         (`sendOut` → `OFT.send`) flows of `UtexoLZAdapter`, plus access
-///         control, native-fee handling, surplus refunds and refund failures.
+/// @notice Adapter authentication, forwarding, fee handling and recovery tests.
 contract UtexoLZAdapterTest is Test {
     // -- Events (re-declared for vm.expectEmit) -------------------------------
     event ComposeFundsIn(
@@ -57,24 +55,17 @@ contract UtexoLZAdapterTest is Test {
     uint32 constant DST_EID = 30110; // Arbitrum eid (outbound stub)
     uint32 constant LEGACY_EID = 30420; // Tron eid (legacy USDT0 mesh)
     uint256 constant SOURCE_CHAIN_ID = 1; // Default `block.chainid` carried by composeMsg
-    uint256 constant RGB_CHAIN_ID = 1_000_001; // Reserved-range id for RGB (non-EVM endpoint)
+    uint256 constant RGB_CHAIN_ID = 1_000_001; // Synthetic destination fixture
     uint256 constant NATIVE_FEE = 0.01 ether;
-    /// @dev Default settlementData for LZ-adapter routes: the destination route
-    ///      is registered with `NullSettlementModule` on Bridge, so the blob is
-    ///      empty. Non-empty values are exercised in
-    ///      `test_lzCompose_settlementData_roundTrips`.
     bytes constant EMPTY_SETTLEMENT_DATA = "";
 
-    /// @dev Recognisable bytes32 used as `composeFrom` for every "honest" lzCompose
-    ///      test — populated into `trustedEntrypoints` during `setUp`.
+    /// @dev Source entrypoint registered for `SRC_EID` in setUp.
     bytes32 constant TRUSTED_ENTRYPOINT_B32 = bytes32(uint256(0xE471) << 240);
 
-    /// @dev Authenticated source-chain sender carried in the composeMsg
-    ///      (stamped by `UtexoSourceEntrypoint` as `msg.sender` left-padded).
+    /// @dev Source caller encoded in compose fixtures.
     bytes32 SOURCE_SENDER = bytes32(uint256(uint160(makeAddr("sourceSender"))));
 
-    /// @dev RGB OpId carried inside `settlementData` on the RGB route
-    ///      (`settlementData = abi.encode(RGB_OP_ID)`).
+    /// @dev RGB mint OpId used in settlement-payload fixtures.
     uint256 constant RGB_OP_ID = 42;
 
     // -- Actors ---------------------------------------------------------------
@@ -111,8 +102,7 @@ contract UtexoLZAdapterTest is Test {
         vm.deal(endpoint, 100 ether);
         vm.deal(multisigProxy, 100 ether);
 
-        // Register the trusted source used by every "honest" inbound test:
-        // transport SRC_EID -> entrypoint, bound to business chain id SOURCE_CHAIN_ID.
+        // Bind the fixture entrypoint and source chain id to SRC_EID.
         vm.prank(multisigProxy);
         adapter.setTrustedEntrypoint(SRC_EID, TRUSTED_ENTRYPOINT_B32, SOURCE_CHAIN_ID);
     }
@@ -231,9 +221,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(token.allowance(address(adapter), address(bridge)), 0, "allowance consumed");
     }
 
-    /// @dev The adapter must forward the authenticated `sourceSender`
-    ///      decoded from the composeMsg into `Bridge.fundsIn` unchanged — the
-    ///      Bridge folds it into the derived operationId.
     function test_lzCompose_forwardsSourceSenderToBridge() public {
         uint256 amount = 123e6;
         token.mint(address(adapter), amount);
@@ -252,8 +239,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(bridge.lastSourceSender(), SOURCE_SENDER, "decoded sourceSender forwarded to Bridge");
     }
 
-    /// @dev `ComposeFundsIn` must carry the `operationId` the Bridge
-    ///      derived on-chain and returned to the adapter — not a payload field.
     function test_lzCompose_emitsDerivedOperationId() public {
         uint256 amount = 321e6;
         token.mint(address(adapter), amount);
@@ -266,8 +251,7 @@ contract UtexoLZAdapterTest is Test {
             abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, string("addr"), EMPTY_SETTLEMENT_DATA, uint256(0))
         );
 
-        // With no override set, the mock returns its deterministic derivation —
-        // recorded in `lastReturnedOperationId`. Assert the event topic matches.
+        // Check the operation id returned by MockBridge against the emitted event.
         bytes32 guid = bytes32("derived-guid");
 
         vm.recordLogs();
@@ -292,7 +276,7 @@ contract UtexoLZAdapterTest is Test {
     }
 
     function test_lzCompose_zeroNativeValue_okForTokenRoutes() public {
-        // TOKEN-currency routes pass msg.value == 0. Adapter must still forward.
+        // Exercise a compose with no forwarded native value.
         uint256 amount = 100e6;
         token.mint(address(adapter), amount);
 
@@ -311,12 +295,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(token.balanceOf(address(bridge)), amount, "bridge holds tokens");
     }
 
-    /// @dev `sourceChainId` is read from the business payload (set by
-    ///      `UtexoSourceEntrypoint` from `block.chainid` on the source side)
-    ///      and surfaced both via the event and via the forwarded
-    ///      `Bridge.fundsIn` call. Post R-M-02 the value must also match the
-    ///      chain id registered for the transport `srcEid`, so this test binds
-    ///      SRC_EID to the custom chain id before composing.
     function test_lzCompose_emitsSourceChainIdFromPayload() public {
         uint256 customChainId = 137; // pretend the deposit came from Polygon
         uint256 amount = 7e6;
@@ -348,12 +326,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(bridge.lastSourceChainId(), customChainId, "sourceChainId forwarded to Bridge");
     }
 
-    /// @dev `settlementData` is opaque to the adapter — whatever the source
-    ///      side packs into the composeMsg must reach `Bridge.fundsIn`
-    ///      byte-for-byte and surface on the `ComposeFundsIn` event. Routes
-    ///      registered with `NullSettlementModule` happen to pass empty bytes,
-    ///      but non-empty blobs are valid inputs for routes whose module
-    ///      consumes them (e.g. RGB).
     function test_lzCompose_settlementData_roundTrips() public {
         uint256 amount = 50e6;
         bytes memory data = hex"deadbeefcafe0001";
@@ -381,9 +353,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(bridge.lastSettlementData(), data, "settlementData byte-for-byte to Bridge");
     }
 
-    /// @dev When Bridge.fundsIn reverts, the (non-empty) `settlementData` must
-    ///      be captured on the stuck record so operators can inspect what the
-    ///      destination route was supposed to receive.
     function test_lzCompose_storesSettlementDataOnStuckRecord() public {
         bridge.setReverts(true);
 
@@ -505,10 +474,8 @@ contract UtexoLZAdapterTest is Test {
         adapter.lzCompose(address(oft), bytes32("missing-route"), message, address(0), "");
     }
 
-    /// @dev Current behavior: if Bridge reverts and the catch-path allowance
-    ///      cleanup also reverts, lzCompose bubbles the cleanup failure before
-    ///      writing a recoverable stuck record.
-    function test_catchCleanupRevertLeavesNoStuckRecord_currentBehavior() public {
+    /// @dev Allowance cleanup failure reverts compose before a recovery record is written.
+    function test_lzCompose_revertsWhenAllowanceCleanupFails() public {
         ZeroApprovalRevertingERC20 badToken = new ZeroApprovalRevertingERC20();
         MockOFT badOft = new MockOFT(address(badToken));
         MockBridge badBridge = new MockBridge(address(badToken));
@@ -550,10 +517,8 @@ contract UtexoLZAdapterTest is Test {
         assertEq(rec.sourceSender, bytes32(0), "no stuck source sender");
     }
 
-    /// @dev Current behavior: a zero credited amount can still enter the catch
-    ///      path. If native value was supplied, the adapter stores a native-only
-    ///      stuck record that refundStuckFunds treats as nonexistent.
-    function test_zeroCreditedAmountCreatesUnrecoverableNativeStuckRecord_currentBehavior() public {
+    /// @dev A zero-token failure can store native value, but refund requires a positive token amount.
+    function test_lzCompose_zeroAmountRecordsNativeButRefundReverts() public {
         ZeroAmountBridge zeroBridge = new ZeroAmountBridge();
         UtexoLZAdapter zeroAdapter =
             _deploySingleRoute(endpoint, address(token), address(zeroBridge), multisigProxy, SRC_EID, address(oft));
@@ -570,6 +535,19 @@ contract UtexoLZAdapterTest is Test {
             0,
             TRUSTED_ENTRYPOINT_B32,
             abi.encode(SOURCE_CHAIN_ID, SOURCE_SENDER, RGB_CHAIN_ID, "tb1q-zero", EMPTY_SETTLEMENT_DATA, nativeValue)
+        );
+
+        vm.expectEmit(true, true, false, true, address(zeroAdapter));
+        emit ComposeFundsInFailed(
+            guid,
+            SOURCE_SENDER,
+            SOURCE_CHAIN_ID,
+            0,
+            nativeValue,
+            RGB_CHAIN_ID,
+            "tb1q-zero",
+            EMPTY_SETTLEMENT_DATA,
+            abi.encodeWithSelector(ZeroAmountBridge.AmountBelowMinimum.selector, uint256(0), uint256(1))
         );
 
         vm.prank(endpoint);
@@ -595,10 +573,7 @@ contract UtexoLZAdapterTest is Test {
         assertEq(address(zeroAdapter).balance, nativeValue, "native remains unrecovered");
     }
 
-    /// @dev Bridge.fundsIn revert no longer makes `lzCompose` revert — instead
-    ///      the funds are parked under `_stuckFunds[guid]` and a failure event
-    ///      is emitted. `lzCompose` itself returns successfully so the LZ
-    ///      endpoint clears its compose queue.
+    /// @dev A caught Bridge rejection records this funded deposit and completes the compose.
     function test_lzCompose_storesStuckRecordIfBridgeReverts() public {
         bridge.setReverts(true);
 
@@ -619,9 +594,7 @@ contract UtexoLZAdapterTest is Test {
 
         bytes32 guid = bytes32("stuck-guid");
 
-        // Reason data is the abi-encoded `Error(string)` for the mock's
-        // revert message — assert the indexed guid + sourceSender and the
-        // non-indexed scalar/string fields, ignore `reason` byte-for-byte.
+        // Check the indexed guid and source sender; revert-data preservation is tested separately.
         vm.expectEmit(true, true, false, false, address(adapter));
         emit ComposeFundsInFailed(
             guid, SOURCE_SENDER, SOURCE_CHAIN_ID, amount, nativeValue, destChainId, destAddr, EMPTY_SETTLEMENT_DATA, ""
@@ -671,11 +644,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(rec.nativeValue, 0, "no record on success");
     }
 
-    /// @dev A second failed compose under a guid that
-    ///      already has a parked record must revert rather than overwrite it,
-    ///      so the originally stranded funds stay recoverable via
-    ///      `refundStuckFunds`. LayerZero guids are unique per packet, so this
-    ///      is defensive hardening, exercised here directly.
     function test_lzCompose_duplicateGuidFailure_revertsAndPreservesRecord() public {
         bridge.setReverts(true);
 
@@ -714,16 +682,12 @@ contract UtexoLZAdapterTest is Test {
         vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.StuckFundsAlreadyExist.selector, guid));
         adapter.lzCompose(address(oft), guid, message2, address(0), "");
 
-        // Original record preserved — not clobbered by the second attempt.
         IUtexoLZAdapter.StuckFunds memory afterAttempt = adapter.getStuckFunds(guid);
         assertEq(afterAttempt.amountLD, amount1, "amountLD unchanged");
         assertEq(afterAttempt.sourceSender, SOURCE_SENDER, "sourceSender unchanged");
         assertEq(afterAttempt.destinationAddress, "first", "destAddr unchanged");
     }
 
-    /// @dev An inbound compose whose settlementData exceeds the cap is
-    ///      rejected right after decode — before any onward plumbing or
-    ///      `_stuckFunds` storage write.
     function test_lzCompose_revertsOnOversizedSettlementData() public {
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);
@@ -743,8 +707,6 @@ contract UtexoLZAdapterTest is Test {
         adapter.lzCompose(address(oft), bytes32("big-guid"), message, address(0), "");
     }
 
-    /// @dev settlementData exactly at the cap is accepted and
-    ///      flows through to the Bridge.
     function test_lzCompose_acceptsSettlementDataAtMaxBoundary() public {
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);
@@ -765,8 +727,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(adapter.getStuckFunds(bytes32("ok-guid")).amountLD, 0, "no stuck record at boundary");
     }
 
-    /// @dev An inbound compose whose destinationAddress exceeds the cap
-    ///      is rejected right after decode.
     function test_lzCompose_revertsOnOversizedDestinationAddress() public {
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);
@@ -786,7 +746,6 @@ contract UtexoLZAdapterTest is Test {
         adapter.lzCompose(address(oft), bytes32("long-addr-guid"), message, address(0), "");
     }
 
-    /// @dev DestinationAddress exactly at the cap flows through.
     function test_lzCompose_acceptsDestinationAddressAtMaxBoundary() public {
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);
@@ -807,9 +766,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(adapter.getStuckFunds(bytes32("ok-addr-guid")).amountLD, 0, "no stuck record at boundary");
     }
 
-    /// @dev A compose executed with `msg.value` != the bound
-    ///      `expectedComposeValue` (griefing) reverts — the deposit is NOT
-    ///      parked, so LayerZero can retry with the funded value.
     function test_lzCompose_revertsOnComposeValueMismatch() public {
         uint256 amount = 1e6;
         uint256 expected = 0.01 ether; // what the depositor funded as the drop
@@ -834,11 +790,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(token.balanceOf(address(bridge)), 0, "bridge untouched");
     }
 
-    /// @dev An honestly-funded compose (`msg.value == expectedComposeValue`)
-    ///      that the Bridge then rejects (e.g. oracle drift moved the native
-    ///      commission) lands in `_stuckFunds` — recoverable, not reverted
-    ///      without a record. This is the case a bare `< commission` guard
-    ///      would wrongly drop.
     function test_lzCompose_honestlyFundedButBridgeReverts_parksRecoverable() public {
         bridge.setReverts(true);
 
@@ -862,10 +813,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(rec.nativeValue, expected, "parked native value");
     }
 
-    /// @dev A compose whose business payload cannot be decoded must NOT
-    ///      revert (that would strand the OFT-credited USDT0 with no record).
-    ///      Instead it parks a minimal recoverable record (amountLD + forwarded
-    ///      native); the business fields are unknown, so they stay at defaults.
     function test_lzCompose_malformedPayload_parksRecoverableRecord() public {
         uint256 amount = 3e6;
         uint256 nativeValue = 0.004 ether;
@@ -902,9 +849,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(token.balanceOf(address(bridge)), 0, "bridge untouched");
     }
 
-    /// @dev The unique-guid guard also covers the malformed-park path —
-    ///      a second malformed compose for the same guid reverts rather than
-    ///      overwriting the first parked record.
     function test_lzCompose_malformedPayload_guidGuardRevertsOnSecond() public {
         token.mint(address(adapter), 5e6);
         bytes memory badPayload = abi.encode(uint256(1));
@@ -934,10 +878,7 @@ contract UtexoLZAdapterTest is Test {
         vm.expectEmit(true, false, false, true, address(adapter));
         emit SendOut(keccak256(abi.encode("mock-guid", uint64(1))), DST_EID, recipientB32, amount);
 
-        // `vm.prank(msgSender, txOrigin)` sets both — the adapter refunds
-        // the native surplus to `tx.origin` (= the relayer EOA in production).
-        // The MockOFT-generated guid is asserted via the `SendOut` event above;
-        // the function intentionally returns nothing.
+        // Set the transaction origin separately to check the OFT refund address.
         vm.prank(multisigProxy, relayer);
         adapter.sendOut{value: NATIVE_FEE}(DST_EID, recipientB32, amount, amount, extraOptions);
 
@@ -952,8 +893,7 @@ contract UtexoLZAdapterTest is Test {
         assertEq(oft.lastComposeMsg().length, 0, "composeMsg empty");
         assertEq(oft.lastOftCmd().length, 0, "oftCmd empty");
         assertEq(oft.lastMsgValue(), NATIVE_FEE, "native fee forwarded");
-        // OFT.send is called with refundAddress = tx.origin, which equals the
-        // relayer EOA in production. Defensive only — OFT consumes the full fee.
+        // The OFT refund recipient is the transaction origin.
         assertEq(oft.lastRefundAddress(), relayer, "refund addr = tx.origin");
 
         // Exact-fee call: proxy balance drops by exactly NATIVE_FEE.
@@ -983,9 +923,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(address(adapter).balance, 0, "no native residue");
     }
 
-    /// @dev `sendOut` no longer returns the guid — it is published only via
-    ///      the `SendOut` event. Assert that each successive call emits a
-    ///      distinct, MockOFT-derived guid.
     function test_sendOut_emitsUniqueGuidPerCall() public {
         token.mint(address(adapter), 100e6);
 
@@ -1100,10 +1037,7 @@ contract UtexoLZAdapterTest is Test {
         adapter.sendOut{value: NATIVE_FEE}(DST_EID, recipientB32, 100e6, 100e6, hex"0003");
     }
 
-    /// @dev Refund failure path: `tx.origin` is spoofed to a contract that
-    ///      rejects plain-ether transfers (no `receive()`). Cannot happen in
-    ///      production where `tx.origin` is always the backend relayer EOA,
-    ///      but the branch is reachable on-chain so the revert must surface.
+    /// @dev A rejecting transaction-origin fixture exercises native-refund failure.
     function test_sendOut_revertsIfRefundFails() public {
         RejectingRecipient rr = new RejectingRecipient();
 
@@ -1115,8 +1049,6 @@ contract UtexoLZAdapterTest is Test {
         adapter.sendOut{value: NATIVE_FEE + 1}(DST_EID, recipientB32, amount, amount, hex"0003");
     }
 
-    /// @dev Exact-fee call skips the refund branch entirely, so even a
-    ///      `tx.origin` that rejects ETH does not block the call.
     function test_sendOut_exactFee_skipsRefundBranch() public {
         RejectingRecipient rr = new RejectingRecipient();
 
@@ -1236,8 +1168,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(token.balanceOf(address(adapter)), 0, "adapter cleared");
     }
 
-    /// @dev `refundStuckFunds` releases only the amount stored under a guid;
-    ///      unrelated balance requires the explicit untracked-recovery path.
     function test_refundStuckFunds_doesNotSweepUntrackedToken() public {
         uint256 orphanAmount = 300e6;
         uint256 stuckAmount = 700e6;
@@ -1384,8 +1314,6 @@ contract UtexoLZAdapterTest is Test {
         adapter.refundStuckFunds(unknown, makeAddr("any"));
     }
 
-    /// @dev Refund must atomically roll back if the native leg fails, so the
-    ///      record stays recoverable on the next attempt.
     function test_refundStuckFunds_revertsAndPreservesRecordIfNativeRefundFails() public {
         uint256 amount = 100e6;
         uint256 nativeValue = 0.01 ether;
@@ -1477,7 +1405,7 @@ contract UtexoLZAdapterTest is Test {
     function test_setTrustedEntrypoint_setsAndUnsets() public {
         uint32 eid = 40161; // some other transport eid
         bytes32 ep = bytes32(uint256(0xC0FFEE));
-        uint256 chain = 8453; // Base
+        uint256 chain = 8453; // Chain A fixture
 
         // Initial state: nothing registered for this eid.
         assertEq(adapter.trustedEntrypoints(eid), bytes32(0), "starts unregistered");
@@ -1527,8 +1455,6 @@ contract UtexoLZAdapterTest is Test {
     // lzCompose — trusted-entrypoint enforcement
     // =========================================================================
 
-    /// @dev Any `composeFrom` outside `trustedEntrypoints` must revert before
-    ///      the payload is decoded or any Bridge interaction starts.
     function test_lzCompose_revertsOnUntrustedComposeSource() public {
         bytes32 attackerB32 = bytes32(uint256(0xBADBAD));
         uint256 amount = 1e6;
@@ -1546,8 +1472,7 @@ contract UtexoLZAdapterTest is Test {
         vm.expectRevert(abi.encodeWithSelector(IUtexoLZAdapter.UntrustedComposeSource.selector, SRC_EID, attackerB32));
         adapter.lzCompose(address(oft), bytes32("x"), message, address(0), "");
 
-        // Funds did not move and no stuck record was created — the call
-        // reverts entirely, leaving the LZ composeQueue intact.
+        // Failed authentication preserves balances and creates no recovery record.
         assertEq(token.balanceOf(address(bridge)), 0, "bridge untouched");
         assertEq(token.balanceOf(address(adapter)), amount, "adapter still holds tokens");
 
@@ -1576,21 +1501,14 @@ contract UtexoLZAdapterTest is Test {
     }
 
     // =========================================================================
-    // R-M-02 regression — srcEid binding (post-fix)
+    // Source EID binding
     // =========================================================================
 
-    /// @dev UT-FIX-04. After the fix, a packet whose payload `sourceChainId`
-    ///      does not match the chain id registered for its transport `srcEid`
-    ///      must be rejected — even when the caller IS the entrypoint trusted
-    ///      for that srcEid. Proves `sourceChainId` (which drives route +
-    ///      commission selection) is corroborated by the LayerZero transport
-    ///      rather than taken on faith from the payload.
-    function test_srcEidMustMatchDeclaredSourceChain_afterFix() public {
+    function test_lzCompose_revertsOnSourceChainIdMismatch() public {
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);
 
-        // setUp registered SRC_EID -> (TRUSTED_ENTRYPOINT_B32, SOURCE_CHAIN_ID).
-        // Keep the trusted entrypoint, but declare a different sourceChainId.
+        // Keep the trusted entrypoint but declare a different source chain id.
         uint256 wrongChainId = SOURCE_CHAIN_ID + 999;
 
         bytes memory message = _encodeCompose(
@@ -1611,24 +1529,17 @@ contract UtexoLZAdapterTest is Test {
         assertEq(adapter.getStuckFunds(bytes32("mismatch")).amountLD, 0, "no stuck record");
     }
 
-    /// @dev An entrypoint trusted for one `srcEid` must NOT be honoured on a
-    ///      different `srcEid` (here unregistered). Proves trust is bound to the
-    ///      transport origin LayerZero attests, not to the bare caller address
-    ///      — so a trusted entrypoint cannot have its messages accepted as if
-    ///      they arrived from another source chain.
-    function test_lzCompose_revertsWhenEntrypointTrustedForDifferentSrcEid_afterFix() public {
+    function test_lzCompose_revertsWhenEntrypointTrustedForDifferentSrcEid() public {
         uint32 otherEid = 40161; // not registered in setUp
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);
 
-        // Configure only the transport route. The source identity remains
-        // intentionally unregistered so this test reaches the trust check.
+        // Leave the source identity unregistered for this EID.
         oft.setPeer(otherEid, bytes32(uint256(3)));
         vm.prank(multisigProxy);
         adapter.setOftRoute(otherEid, address(oft));
 
-        // composeFrom is the entrypoint trusted for SRC_EID, but the transport
-        // srcEid here is `otherEid`, for which nothing is registered.
+        // Reuse the entrypoint bytes under an EID that has no trusted binding.
         bytes memory message = _encodeCompose(
             uint64(1),
             otherEid,
@@ -1647,11 +1558,7 @@ contract UtexoLZAdapterTest is Test {
         assertEq(token.balanceOf(address(adapter)), amount, "adapter still holds tokens");
     }
 
-    /// @dev Happy path with all three bindings aligned: trusted entrypoint for
-    ///      the transport `srcEid` AND a payload `sourceChainId` that matches the
-    ///      chain id registered for that srcEid. The call must succeed and
-    ///      forward to the Bridge.
-    function test_lzCompose_succeedsWhenSrcEidEntrypointAndChainIdAllMatch_afterFix() public {
+    function test_lzCompose_succeedsWhenSrcEidEntrypointAndChainIdAllMatch() public {
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);
 
@@ -1674,8 +1581,7 @@ contract UtexoLZAdapterTest is Test {
     // lzCompose — credited amount accounting
     // =========================================================================
 
-    /// @dev The adapter must forward the OFT-credited `amountLD` from the compose
-    ///      envelope. It must not infer the amount from adapter balance or payload data.
+    /// @dev The compose envelope supplies the credited amount, independently of existing balance.
     function test_lzCompose_usesCreditedAmountNotSourceRequestedAmount() public {
         uint256 sourceRequestedAmount = 10e6;
         uint256 creditedAmount = 7e6;
@@ -1717,8 +1623,6 @@ contract UtexoLZAdapterTest is Test {
     // lzCompose — Bridge revert reason regression
     // =========================================================================
 
-    /// @dev The raw Bridge revert returndata is operationally important: indexers
-    ///      and recovery tooling use it to classify why funds were parked.
     function test_lzCompose_bridgeRevertReasonPreserved() public {
         bridge.setReverts(true);
 
@@ -1790,8 +1694,7 @@ contract UtexoLZAdapterTest is Test {
         deployed = new UtexoLZAdapter(endpoint_, token_, bridge_, multisigProxy_, eids, ofts);
     }
 
-    /// @dev Drive `lzCompose` against a reverting Bridge so a stuck record
-    ///      is created for `guid`. `sourceChainId` is set to `SOURCE_CHAIN_ID`.
+    /// @dev Records a failed deposit through the reverting Bridge fixture.
     function _createStuckRecord(
         bytes32 guid,
         uint256 amount,
@@ -1814,9 +1717,7 @@ contract UtexoLZAdapterTest is Test {
         adapter.lzCompose{value: nativeValue}(address(oft), guid, message, address(0), "");
     }
 
-    /// @dev Build the full LayerZero compose-message payload that the Endpoint
-    ///      would deliver to `lzCompose`. Layout:
-    ///        [nonce (8)][srcEid (4)][amountLD (32)][composeFrom (32)][business]
+    /// @dev OFT envelope: nonce (8 bytes), source EID (4), amount (32), composeFrom (32), then payload.
     function _encodeCompose(
         uint64 nonce_,
         uint32 srcEid_,
@@ -1828,8 +1729,5 @@ contract UtexoLZAdapterTest is Test {
     }
 }
 
-/// @dev Contract that rejects every plain-ether transfer. Used as a spoofed
-///      `tx.origin` to force the `NativeRefundFailed` branch in `sendOut`.
-///      No `receive()` / `fallback()` is declared, so any value-carrying call
-///      reverts.
+/// @dev Rejects native refunds when used as a transaction-origin fixture.
 contract RejectingRecipient {}
