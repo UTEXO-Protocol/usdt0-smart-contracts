@@ -1,7 +1,4 @@
-/**
- * Tests for UtexoSourceEntrypoint on Tron.
- * Mirrors the structure of ethereum/test/UtexoSourceEntrypoint.t.sol.
- */
+/** Source entrypoint tests against a local Tron node. */
 
 const UtexoSourceEntrypoint = artifacts.require('UtexoSourceEntrypoint');
 const MockERC20             = artifacts.require('MockERC20');
@@ -17,16 +14,12 @@ const ZERO_ADDR_HEX = '0x' + '0'.repeat(40);
 const ZERO_BYTES32  = '0x' + '0'.repeat(64);
 
 const NATIVE_FEE     = 100_000;         // sun (= 0.1 TRX)
-const DEST_CHAIN_ID  = 1_000_001;       // RGB id in our reserved range
+const DEST_CHAIN_ID  = 1_000_001;       // Synthetic destination fixture
 const DEST_ADDR      = 'tb1q-dest-addr';
-const RGB_OP_ID      = 42; // RGB OpId, now carried inside settlementData
-
-const AMOUNT_LD = '100000000';          // 100 USDT (6 decimals), as string
-
+const AMOUNT_LD = '100000000';          // Token amount fixture, encoded as a string
 const FEE_LIMIT = 1_000_000_000;        // 1000 TRX cap per call
 
-// Polling settings for tx confirmation/revert detection.
-// CI runners can confirm Tron txs noticeably slower than local TRE.
+// Allow time for transaction confirmation and indexing by the local node.
 const POLL_INTERVAL_MS = 500;
 const POLL_TIMEOUT_MS  = 120_000;
 const DEPLOY_RETRIES = 3;
@@ -36,11 +29,7 @@ const DEPLOY_RETRY_DELAY_MS = 1_500;
 // Helpers
 // =============================================================================
 
-/**
- * Deploys a fresh instance using raw TronWeb (not Contract.new()) so that each
- * call resolves to a unique CREATE-derived address based on the current
- * on-chain nonce of the sender.
- */
+/** Deploys through TronWeb and waits for the contract code to be indexed. */
 async function deploy(artifact, ...parameters) {
   let lastError;
   for (let attempt = 1; attempt <= DEPLOY_RETRIES; attempt += 1) {
@@ -100,10 +89,7 @@ async function waitForContract(addrBase58OrHex) {
   throw new Error(`waitForContract: contract ${addrBase58OrHex} not available within ${POLL_TIMEOUT_MS}ms`);
 }
 
-/**
- * Polls `getTransactionInfo` until it is populated, then returns it. Tron tx
- * confirmation typically lands within 1-3 seconds.
- */
+/** Waits until transaction information is available from the node. */
 async function waitForTxInfo(txid) {
   const deadline = Date.now() + POLL_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -136,11 +122,7 @@ async function sendAndConfirm(sendPromise) {
   return info;
 }
 
-/**
- * Asserts that the call resulted in an on-chain revert. Accepts either:
- *   - a builder chain that ends in `.send(opts)` (we await it and poll), or
- *   - any thenable that already resolves to a txid string.
- */
+/** Accepts a rejected send or a confirmed failed transaction. */
 async function sendExpectRevert(sendPromise) {
   let txid;
   try {
@@ -190,8 +172,8 @@ async function sendExpectSuccess(sendPromise) {
 }
 
 /**
- * Asserts that a deploy resulted in a constructor revert (TVM finalises the
- * tx successfully but writes no code to the address).
+ * Accepts a failed deployment or an address with no code. A TVM constructor
+ * revert may finalize the transaction without deploying contract code.
  */
 async function deployExpectRevert(artifact, ...parameters) {
   let instance;
@@ -208,27 +190,10 @@ async function deployExpectRevert(artifact, ...parameters) {
   assert.fail(`Deploy succeeded when constructor revert was expected (addr ${instance.address})`);
 }
 
-/// NOTE: TronWeb ABI encoding for nested dynamic params (`string`, `bytes`) is
-/// flaky when `bytes` is exactly empty (`0x`) in this test environment.
-/// Use a non-empty sentinel by default so happy-path `deposit` doesn't revert
-/// due to client-side encoding quirks unrelated to contract logic.
+// Use a non-empty settlement fixture to avoid this client's empty-bytes encoding issue.
 const DEFAULT_SETTLEMENT_DATA = '0x00';
 
-/// Default RGB-route settlementData: the RGB OpId as `abi.encode(uint256)`.
-const RGB_SETTLEMENT_DATA = tronWeb.utils.abi.encodeParams(
-  ['uint256'],
-  [RGB_OP_ID.toString()]
-);
-
-/**
- * ABI-encodes the business payload that `Entrypoint.deposit` will decode:
- *   abi.encode(uint256 destinationChainId, string destinationAddress,
- *              bytes settlementData)
- *
- * `settlementData` defaults to `DEFAULT_SETTLEMENT_DATA` — for LZ-adapter routes
- * registered with `NullSettlementModule` on Arbitrum, the blob is always empty.
- * Non-empty values are exercised by the round-trip test below.
- */
+/** Encodes a destination payload with the test settlement-data default. */
 function encodePayload(destChainId, destAddr, settlementData = DEFAULT_SETTLEMENT_DATA) {
   return tronWeb.utils.abi.encodeParams(
     ['uint256', 'string', 'bytes'],
@@ -287,7 +252,7 @@ contract('UtexoSourceEntrypoint', () => {
       ownerAccount.address.base58
     );
 
-    // Fund the deployer with 1M USDT (6 decimals).
+    // Fund the caller with mock tokens.
     await sendExpectSuccess(
       token.mint(deployerAddr, '1000000000000').send({ feeLimit: FEE_LIMIT })
     );
@@ -673,13 +638,10 @@ contract('UtexoSourceEntrypoint', () => {
         composeMsg
       );
 
-      // The entrypoint stamps the authenticated depositor (msg.sender) into
-      // the composeMsg's second field, left-padded to bytes32 — not taken
-      // from any caller-supplied payload field.
+      // Check the caller identity added by the entrypoint.
       const expectedSourceSender = '0x' + '00'.repeat(12) + tronAddrTo20ByteHex(deployerAddr).slice(2);
 
-      // decoded[0] is whatever block.chainid the local node reports; we don't
-      // pin its value here — just confirm something was prepended.
+      // The source chain id comes from the local node.
       assert.isAbove(Number(decoded[0]), 0, 'sourceChainId prepended');
       assert.equal(decoded[1].toLowerCase(), expectedSourceSender, 'sourceSender == depositor (authenticated)');
       assert.equal(decoded[2].toString(), String(DEST_CHAIN_ID), 'destChainId');
@@ -688,12 +650,7 @@ contract('UtexoSourceEntrypoint', () => {
       assert.equal(decoded[5].toString(), '0',                     'expectedComposeValue passthrough');
     });
 
-    /// Non-empty `settlementData` must round-trip byte-for-byte through the
-    /// payload → composeMsg pipeline so the destination route's
-    /// `SettlementModule.onFundsIn` on Arbitrum sees exactly what the caller
-    /// intended. LZ-adapter flows default to empty data
-    /// (`NullSettlementModule`), but future routes (or future modules) may
-    /// consume a non-empty blob and the entrypoint must not lose or mangle it.
+    // Check that opaque settlement data reaches the OFT unchanged.
     it('round-trips non-empty settlementData through composeMsg', async () => {
       const blob = '0xdeadbeefcafebabe1122334455667788';
       const payloadWithBlob = encodePayload(DEST_CHAIN_ID, DEST_ADDR, blob);
@@ -744,8 +701,6 @@ contract('UtexoSourceEntrypoint', () => {
       assert.isTrue(oftCmd === '0x' || oftCmd === '0x0' || oftCmd === '', 'oftCmd empty');
     });
 
-    /// SettlementData exactly at the cap deposits fine and is
-    /// forwarded to the OFT.
     it('accepts settlementData exactly at the cap', async () => {
       const cap     = Number(await entrypoint.MAX_SETTLEMENT_DATA_LENGTH().call());
       const atCap   = '0x' + '00'.repeat(cap);
@@ -754,9 +709,6 @@ contract('UtexoSourceEntrypoint', () => {
       await sendExpectSuccess(
         token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
       );
-      // A full-cap settlementData makes the OFT store a ~1.2 KB composeMsg. Wait
-      // for confirmation before reading balances (the EVM test is vm-synchronous;
-      // Tron is not), so the balance read cannot race the deposit tx.
       await sendAndConfirm(
         entrypoint.deposit(
           [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadAtCap, ZERO_ADDR_HEX, 0]
@@ -848,7 +800,7 @@ contract('UtexoSourceEntrypoint', () => {
       );
     });
 
-    /// SettlementData over the cap reverts before any token pull.
+    // Oversized settlementData rolls back the deposit transaction.
     it('reverts on settlementData exceeding the cap', async () => {
       const cap     = Number(await entrypoint.MAX_SETTLEMENT_DATA_LENGTH().call());
       const overCap = '0x' + '00'.repeat(cap + 1);
@@ -868,7 +820,7 @@ contract('UtexoSourceEntrypoint', () => {
       );
     });
 
-    /// DestinationAddress over the cap reverts before any token pull.
+    // An oversized address rolls back the deposit transaction.
     it('reverts on destinationAddress exceeding the cap', async () => {
       const cap      = Number(await entrypoint.MAX_DESTINATION_ADDRESS_LENGTH().call());
       const longAddr = 'a'.repeat(cap + 1);
@@ -955,8 +907,6 @@ contract('UtexoSourceEntrypoint', () => {
       assert.equal(quoted.toString(), String(FEE));
     });
 
-    /// Quote applies the same cap, so it reverts on exactly the input
-    /// the matching deposit would reject.
     it('reverts on settlementData exceeding the cap', async () => {
       const cap     = Number(await entrypoint.MAX_SETTLEMENT_DATA_LENGTH().call());
       const overCap = '0x' + '00'.repeat(cap + 1);
