@@ -29,9 +29,9 @@ contract UtexoSourceEntrypointTest is Test {
     /// @dev Synthetic destination id encoded in deposit payload fixtures.
     uint256 constant DEST_CHAIN_ID = 1_000_001;
     string constant DEST_ADDR = "tb1q-dest-addr";
-    /// @dev RGB mint OpId used in settlement-payload fixtures.
-    uint256 constant RGB_OP_ID = 42;
-    /// @dev Exclusive Arbitrum L2 deadline paired with the RGB mint OpId.
+    /// @dev RGB lock ID used in settlement-payload fixtures.
+    uint256 constant RGB_LOCK_ID = 42;
+    /// @dev Exclusive Arbitrum L2 deadline paired with the RGB lock ID.
     uint64 constant RGB_BEFORE_BLOCK = type(uint64).max;
     /// @dev Empty payload fixture; the OFT mock does not validate settlement semantics.
     bytes constant EMPTY_SETTLEMENT_DATA = "";
@@ -771,7 +771,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD: amount,
             minAmountLD: amount,
             extraOptions: hex"0003", // arbitrary non-empty
-            // RGB route: the OpId and exclusive Arbitrum L2 deadline travel in settlementData.
+            // RGB route: the lock ID and exclusive Arbitrum L2 deadline travel in settlementData.
             payload: abi.encode(DEST_CHAIN_ID, DEST_ADDR, _rgbSettlementData()),
             refundTo: address(0),
             expectedComposeValue: 0
@@ -779,7 +779,7 @@ contract UtexoSourceEntrypointTest is Test {
     }
 
     function _rgbSettlementData() internal pure returns (bytes memory) {
-        return abi.encode(RGB_OP_ID, RGB_BEFORE_BLOCK);
+        return abi.encode(RGB_LOCK_ID, RGB_BEFORE_BLOCK);
     }
 }
 
