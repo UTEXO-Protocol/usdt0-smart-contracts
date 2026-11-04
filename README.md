@@ -75,14 +75,14 @@ The chain id must be nonzero. The entrypoint limits `destinationAddress` to 512 
 and `settlementData` to 128 bytes. These bounds are also enforced by the adapter.
 
 For the canonical RGB settlement module, use network id `827166`, an empty
-`destinationAddress`, and the mint OpId plus an exclusive Arbitrum L2 block
+`destinationAddress`, and the lock ID plus an exclusive Arbitrum L2 block
 deadline encoded in settlement data:
 
 ```solidity
 abi.encode(
     uint256(827166),
     "",
-    abi.encode(uint256(rgbOpId), uint64(beforeBlock))
+    abi.encode(uint256(lockId), uint64(beforeBlock))
 )
 ```
 
