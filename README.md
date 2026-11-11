@@ -75,10 +75,15 @@ The chain id must be nonzero. The entrypoint limits `destinationAddress` to 512 
 and `settlementData` to 128 bytes. These bounds are also enforced by the adapter.
 
 For the canonical RGB settlement module, use network id `827166`, an empty
-`destinationAddress`, and the mint OpId encoded in settlement data:
+`destinationAddress`, and the lock ID plus an exclusive Arbitrum L2 block
+deadline encoded in settlement data:
 
 ```solidity
-abi.encode(uint256(827166), "", abi.encode(uint256(rgbOpId)))
+abi.encode(
+    uint256(827166),
+    "",
+    abi.encode(uint256(lockId), uint64(beforeBlock))
+)
 ```
 
 The RGB destination address is carried in the consignment. Other routes define their
@@ -145,19 +150,30 @@ amount and native value, leaving the unknown business fields at their defaults. 
 full decoded deposit and revert data. A recorded failure emits `ComposeFundsInFailed`
 and completes the compose call.
 
-Authentication, payload-size, source-chain and compose-value checks revert without
-recording a failure. A failed allowance cleanup or record write also reverts compose.
-These messages remain pending at the endpoint and can be retried.
+After the endpoint and configured OFT authenticate the delivery, permanent entrypoint,
+payload-size and source-chain validation failures are recorded and complete compose.
+Oversized dynamic fields are omitted from the record. `ComposeValueMismatch` remains
+retryable because the permissionless executor controls `msg.value`; a failed allowance
+cleanup or record write also reverts and leaves compose pending.
 
-`getStuckFunds(guid)` reads a record. `refundStuckFunds(guid, recipient)` requires a
-positive recorded token amount and transfers it, together with any recorded native
-value, to the selected Arbitrum recipient. A failed transfer restores the record and
-reserve counter. Recorded deposits are refunded rather than retried through the adapter.
+`getStuckFunds(guid)` returns the full record, including its `isStuck` existence flag.
+`hasStuckFunds(guid)` returns that flag directly and therefore also identifies native-only
+records whose credited token amount is zero. `refundStuckFunds(guid, recipient)`
+transfers any recorded token and native value to the selected Arbitrum recipient. A failed
+transfer restores the record and reserve counter. Recorded deposits are refunded rather
+than retried through the adapter.
 
-`totalRecordedStuckToken` reserves tokens for recorded failures. `sendOut` and
-`recoverUntrackedToken` cannot consume this reserve. However, the balance above it
-also includes OFT credits whose compose has not executed. Confirm which messages
-are pending before recovering that balance; unreserved does not mean unused.
+`totalRecordedStuckToken` reserves tokens for recorded failures. `sendOut`, inbound
+retries and recovery cannot consume this reserve. There is no balance-only recovery:
+the balance above the reserve can include OFT credits whose compose has not executed.
+
+For exceptional recovery of a retryable delivery, federation calls
+`recoverPendingCompose(oft, guid, message, recipient)`. The adapter verifies the exact
+message hash in EndpointV2's index-zero compose queue, checks that the OFT was previously
+authenticated by route configuration, stores a terminal recovery key, and returns exactly
+the credited `amountLD`. A later permissionless retry is acknowledged without calling
+Bridge, allowing EndpointV2 to consume the queue entry. Historical OFTs remain recognized
+for this recovery purpose after a route rotation.
 
 ## Build and test
 

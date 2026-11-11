@@ -29,8 +29,10 @@ contract UtexoSourceEntrypointTest is Test {
     /// @dev Synthetic destination id encoded in deposit payload fixtures.
     uint256 constant DEST_CHAIN_ID = 1_000_001;
     string constant DEST_ADDR = "tb1q-dest-addr";
-    /// @dev RGB mint OpId used in settlement-payload fixtures.
-    uint256 constant RGB_OP_ID = 42;
+    /// @dev RGB lock ID used in settlement-payload fixtures.
+    uint256 constant RGB_LOCK_ID = 42;
+    /// @dev Exclusive Arbitrum L2 deadline paired with the RGB lock ID.
+    uint64 constant RGB_BEFORE_BLOCK = type(uint64).max;
     /// @dev Empty payload fixture; the OFT mock does not validate settlement semantics.
     bytes constant EMPTY_SETTLEMENT_DATA = "";
 
@@ -299,7 +301,7 @@ contract UtexoSourceEntrypointTest is Test {
             block.chainid,
             DEST_CHAIN_ID,
             DEST_ADDR,
-            abi.encode(RGB_OP_ID)
+            _rgbSettlementData()
         );
 
         bytes32 guid = entrypoint.deposit{value: NATIVE_FEE}(p);
@@ -319,7 +321,7 @@ contract UtexoSourceEntrypointTest is Test {
 
         // Check the source identity added by the entrypoint.
         bytes memory expectedComposeMsg = abi.encode(
-            block.chainid, bytes32(uint256(uint160(user))), DEST_CHAIN_ID, DEST_ADDR, abi.encode(RGB_OP_ID), uint256(0)
+            block.chainid, bytes32(uint256(uint160(user))), DEST_CHAIN_ID, DEST_ADDR, _rgbSettlementData(), uint256(0)
         );
         assertEq(oft.lastComposeMsg(), expectedComposeMsg, "composeMsg = chainid + sourceSender + business");
 
@@ -352,7 +354,7 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD: 42e6,
             minAmountLD: 42e6,
             extraOptions: extra,
-            payload: abi.encode(DEST_CHAIN_ID, DEST_ADDR, abi.encode(RGB_OP_ID)),
+            payload: abi.encode(DEST_CHAIN_ID, DEST_ADDR, _rgbSettlementData()),
             refundTo: address(0),
             expectedComposeValue: 0
         });
@@ -446,13 +448,13 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(sourceSender, bytes32(uint256(uint160(depositor))), "sourceSender == depositor (authenticated)");
         assertEq(destChainId, DEST_CHAIN_ID, "destChainId passthrough");
         assertEq(destAddr, DEST_ADDR, "destAddr passthrough");
-        assertEq(settlementData, abi.encode(RGB_OP_ID), "settlementData passthrough");
+        assertEq(settlementData, _rgbSettlementData(), "settlementData passthrough");
         assertEq(ecv, 0, "expectedComposeValue passthrough");
     }
 
     function test_deposit_revertsOnZeroDestinationChainId() public {
         IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
-        p.payload = abi.encode(uint256(0), DEST_ADDR, abi.encode(RGB_OP_ID));
+        p.payload = abi.encode(uint256(0), DEST_ADDR, _rgbSettlementData());
         uint256 tokenBalanceBefore = token.balanceOf(user);
         uint256 nativeBalanceBefore = user.balance;
 
@@ -473,7 +475,7 @@ contract UtexoSourceEntrypointTest is Test {
     function testFuzz_depositAndQuote_acceptNonzeroDestinationChainId(uint256 destinationChainId) public {
         vm.assume(destinationChainId != 0);
         IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
-        p.payload = abi.encode(destinationChainId, DEST_ADDR, abi.encode(RGB_OP_ID));
+        p.payload = abi.encode(destinationChainId, DEST_ADDR, _rgbSettlementData());
 
         assertEq(entrypoint.quote(p), NATIVE_FEE);
 
@@ -748,7 +750,7 @@ contract UtexoSourceEntrypointTest is Test {
 
     function test_quote_revertsOnZeroDestinationChainId() public {
         IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
-        p.payload = abi.encode(uint256(0), DEST_ADDR, abi.encode(RGB_OP_ID));
+        p.payload = abi.encode(uint256(0), DEST_ADDR, _rgbSettlementData());
 
         vm.expectRevert(IUtexoSourceEntrypoint.InvalidDestinationChainId.selector);
         entrypoint.quote(p);
@@ -769,11 +771,15 @@ contract UtexoSourceEntrypointTest is Test {
             amountLD: amount,
             minAmountLD: amount,
             extraOptions: hex"0003", // arbitrary non-empty
-            // RGB route: the RGB OpId travels inside settlementData.
-            payload: abi.encode(DEST_CHAIN_ID, DEST_ADDR, abi.encode(RGB_OP_ID)),
+            // RGB route: the lock ID and exclusive Arbitrum L2 deadline travel in settlementData.
+            payload: abi.encode(DEST_CHAIN_ID, DEST_ADDR, _rgbSettlementData()),
             refundTo: address(0),
             expectedComposeValue: 0
         });
+    }
+
+    function _rgbSettlementData() internal pure returns (bytes memory) {
+        return abi.encode(RGB_LOCK_ID, RGB_BEFORE_BLOCK);
     }
 }
 

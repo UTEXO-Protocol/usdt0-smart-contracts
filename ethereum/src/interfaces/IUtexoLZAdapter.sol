@@ -17,6 +17,7 @@ interface IUtexoLZAdapter {
     /// @param destinationChainId Final destination network id; RGB uses 827166.
     /// @param destinationAddress Destination address from the compose payload.
     /// @param settlementData Original opaque settlement payload, retained for diagnostics.
+    /// @param isStuck Whether this guid currently has a refundable stuck-funds record.
     struct StuckFunds {
         uint256 amountLD;
         uint256 nativeValue;
@@ -25,6 +26,7 @@ interface IUtexoLZAdapter {
         uint256 destinationChainId;
         string destinationAddress;
         bytes settlementData;
+        bool isStuck;
     }
 
     // =========================================================================
@@ -37,6 +39,7 @@ interface IUtexoLZAdapter {
     error OftRouteLengthMismatch(uint256 eidsLength, uint256 oftsLength);
     error DuplicateOftRoute(uint32 eid);
     error OftRouteNotConfigured(uint32 eid);
+    error OftNotKnown(address oft);
     error UnexpectedOft(uint32 eid, address provided, address expected);
     error OftTokenMismatch(address oft, address actualToken, address expectedToken);
     error OftPeerNotConfigured(address oft, uint32 eid);
@@ -59,6 +62,8 @@ interface IUtexoLZAdapter {
     error DestinationAddressTooLong(uint256 length, uint256 maxLength);
     error ComposeValueMismatch(uint256 provided, uint256 expected);
     error InsufficientUntrackedToken(uint256 requested, uint256 available);
+    error ComposeNotPending(bytes32 guid, bytes32 queuedHash, bytes32 messageHash);
+    error ComposeAlreadyRecovered(bytes32 composeKey);
 
     // =========================================================================
     // Events
@@ -119,8 +124,15 @@ interface IUtexoLZAdapter {
     ///         registered, replaced, or revoked (`oft == address(0)`).
     event OftRouteSet(uint32 indexed eid, address indexed oft);
 
-    /// @notice Emitted after tokens outside the recorded reserve are recovered.
-    event UntrackedTokenRecovered(address indexed recipient, uint256 amount);
+    /// @notice Emitted after a pending compose is recovered and permanently disabled in the adapter.
+    event PendingComposeRecovered(
+        bytes32 indexed guid, bytes32 indexed composeKey, address indexed oft, address recipient, uint256 amountLD
+    );
+
+    /// @notice Emitted when LayerZero retries a compose that governance already recovered.
+    event RecoveredComposeIgnored(
+        bytes32 indexed guid, bytes32 indexed composeKey, address indexed oft, uint256 refundedNative
+    );
 
     // =========================================================================
     // State views
@@ -135,6 +147,10 @@ interface IUtexoLZAdapter {
     /// @dev Native and legacy USDT0 meshes can use different local OFTs for the same token.
     function oftByEid(uint32 eid) external view returns (address);
 
+    /// @notice Whether an OFT was ever authenticated by route configuration.
+    /// @dev Historical entries remain true so pending messages can be recovered after route rotation.
+    function knownOfts(address oft) external view returns (bool);
+
     /// @notice Sum of token amounts reserved by live `_stuckFunds` records.
     function totalRecordedStuckToken() external view returns (uint256);
 
@@ -145,9 +161,17 @@ interface IUtexoLZAdapter {
     /// @notice Expected source chain id for the LayerZero EID; zero means unregistered.
     function eidToChainId(uint32 srcEid) external view returns (uint256);
 
-    /// @notice Returns a recorded deposit, or zeroed fields for an unknown guid.
-    /// @dev Refunds require a nonzero `amountLD`.
+    /// @notice Whether a message-specific compose key was recovered by governance.
+    function recoveredComposes(bytes32 composeKey_) external view returns (bool);
+
+    /// @notice Derives the adapter recovery key for an OFT compose message.
+    function composeKey(address oft, bytes32 guid, bytes32 messageHash) external pure returns (bytes32);
+
+    /// @notice Returns a recorded deposit, or a zeroed structure with `isStuck == false` for an unknown guid.
     function getStuckFunds(bytes32 guid) external view returns (StuckFunds memory);
+
+    /// @notice Returns whether a stuck-funds record exists, including native-only zero-token records.
+    function hasStuckFunds(bytes32 guid) external view returns (bool);
 
     // =========================================================================
     // Outbound transfers and fee quotes
@@ -180,8 +204,8 @@ interface IUtexoLZAdapter {
     // =========================================================================
 
     /// @notice Refunds a recorded deposit to a nonzero recipient. Callable only by MultisigProxy.
-    /// @dev Requires a nonzero token amount. Transfers tokens and recorded native value atomically;
-    ///      a failed transfer preserves the record and reserve counter.
+    /// @dev Transfers any recorded token and native value atomically; a failed transfer preserves
+    ///      the record and reserve counter. Native-only zero-token records are refundable.
     /// @param guid LayerZero message identifier for the record.
     /// @param recipient Refund recipient on Arbitrum.
     function refundStuckFunds(bytes32 guid, address recipient) external;
@@ -190,10 +214,12 @@ interface IUtexoLZAdapter {
     /// @dev This includes OFT credits whose compose has not executed.
     function availableUntrackedToken() external view returns (uint256);
 
-    /// @notice Recovers unreserved tokens to a nonzero recipient. Callable only by MultisigProxy.
-    /// @dev Also covers credits whose compose cannot pass validation before a record is created.
-    ///      Does not distinguish pending compose credits from other unreserved tokens.
-    function recoverUntrackedToken(address recipient, uint256 amount) external;
+    /// @notice Recovers the token credit for one pending OFT compose. Callable only by MultisigProxy.
+    /// @dev The message must still be queued at LayerZero compose index zero. Recovery stores a
+    ///      terminal key before transferring the exact credited amount; a later permissionless retry
+    ///      is acknowledged without calling Bridge, allowing the endpoint to consume its queue entry.
+    ///      Native value from failed attempts is not held by the adapter because those calls revert.
+    function recoverPendingCompose(address oft, bytes32 guid, bytes calldata message, address recipient) external;
 
     // =========================================================================
     // OFT route registry
