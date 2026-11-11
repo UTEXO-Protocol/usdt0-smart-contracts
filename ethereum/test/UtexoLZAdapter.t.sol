@@ -74,8 +74,8 @@ contract UtexoLZAdapterTest is Test {
     /// @dev Source caller encoded in compose fixtures.
     bytes32 SOURCE_SENDER = bytes32(uint256(uint160(makeAddr("sourceSender"))));
 
-    /// @dev RGB mint OpId used in settlement-payload fixtures.
-    uint256 constant RGB_OP_ID = 42;
+    /// @dev RGB lock ID used in settlement-payload fixtures.
+    uint256 constant RGB_LOCK_ID = 42;
 
     // -- Actors ---------------------------------------------------------------
     address endpoint;
@@ -198,7 +198,7 @@ contract UtexoLZAdapterTest is Test {
 
         uint256 destChainId = RGB_CHAIN_ID;
         string memory destAddr = "tb1q-dest-addr";
-        bytes memory settlementData = abi.encode(RGB_OP_ID, type(uint64).max);
+        bytes memory settlementData = abi.encode(RGB_LOCK_ID, type(uint64).max);
 
         bytes32 opId = keccak256("derived-op-id");
         bridge.setOperationIdToReturn(opId);
