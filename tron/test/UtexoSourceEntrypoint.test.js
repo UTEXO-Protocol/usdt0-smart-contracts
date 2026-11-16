@@ -18,6 +18,9 @@ const DEST_CHAIN_ID  = 1_000_001;       // Synthetic destination fixture
 const DEST_ADDR      = 'tb1q-dest-addr';
 const AMOUNT_LD = '100000000';          // Token amount fixture, encoded as a string
 const FEE_LIMIT = 1_000_000_000;        // 1000 TRX cap per call
+const AUTHORIZATION_NONCE = '0x' + '42'.repeat(32);
+const AUTHORIZATION_DEADLINE = '2000000000';
+const AUTHORIZATION_SIGNATURE = '0x' + '11'.repeat(65);
 
 // Allow time for transaction confirmation and indexing by the local node.
 const POLL_INTERVAL_MS = 500;
@@ -535,7 +538,7 @@ contract('UtexoSourceEntrypoint', () => {
 
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
@@ -562,7 +565,7 @@ contract('UtexoSourceEntrypoint', () => {
       );
 
       const quoted = await entrypoint.quote(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0]
+        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
       ).call();
 
       assert.equal(quoted.toString(), String(NATIVE_FEE));
@@ -581,7 +584,7 @@ contract('UtexoSourceEntrypoint', () => {
 
       await sendExpectSuccess(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
@@ -620,21 +623,21 @@ contract('UtexoSourceEntrypoint', () => {
       );
     });
 
-    it('builds composeMsg = abi.encode(block.chainid, sourceSender, destChainId, destAddr, settlementData, expectedComposeValue)', async () => {
+    it('builds composeMsg with authenticated source fields and Bridge authorization', async () => {
       await sendExpectSuccess(
         token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
       );
 
       await sendExpectSuccess(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
       const composeMsg = await oft.lastComposeMsg().call();
       const decoded = tronWeb.utils.abi.decodeParams(
         [],
-        ['uint256', 'bytes32', 'uint256', 'string', 'bytes', 'uint256'],
+        ['uint256', 'bytes32', 'uint256', 'string', 'bytes', 'uint256', 'bytes32', 'uint256', 'bytes'],
         composeMsg
       );
 
@@ -648,6 +651,9 @@ contract('UtexoSourceEntrypoint', () => {
       assert.equal(decoded[3],            DEST_ADDR,              'destAddr');
       assert.equal(decoded[4],            DEFAULT_SETTLEMENT_DATA, 'settlementData forwarded');
       assert.equal(decoded[5].toString(), '0',                     'expectedComposeValue passthrough');
+      assert.equal(decoded[6].toLowerCase(), AUTHORIZATION_NONCE, 'authorization nonce passthrough');
+      assert.equal(decoded[7].toString(), AUTHORIZATION_DEADLINE, 'authorization deadline passthrough');
+      assert.equal(decoded[8].toLowerCase(), AUTHORIZATION_SIGNATURE, 'authorization signature passthrough');
     });
 
     // Check that opaque settlement data reaches the OFT unchanged.
@@ -661,14 +667,14 @@ contract('UtexoSourceEntrypoint', () => {
 
       await sendExpectSuccess(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadWithBlob, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadWithBlob, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
       const composeMsg = await oft.lastComposeMsg().call();
       const decoded = tronWeb.utils.abi.decodeParams(
         [],
-        ['uint256', 'bytes32', 'uint256', 'string', 'bytes', 'uint256'],
+        ['uint256', 'bytes32', 'uint256', 'string', 'bytes', 'uint256', 'bytes32', 'uint256', 'bytes'],
         composeMsg
       );
 
@@ -689,7 +695,7 @@ contract('UtexoSourceEntrypoint', () => {
 
       await sendExpectSuccess(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, extra, payload, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, extra, payload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
@@ -711,7 +717,7 @@ contract('UtexoSourceEntrypoint', () => {
       );
       await sendAndConfirm(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadAtCap, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadAtCap, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
@@ -737,7 +743,7 @@ contract('UtexoSourceEntrypoint', () => {
 
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', invalidPayload, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', invalidPayload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
@@ -750,7 +756,7 @@ contract('UtexoSourceEntrypoint', () => {
     it('reverts on zero amount', async () => {
       await sendExpectRevert(
         entrypoint.deposit(
-          ['0', '0', '0x0003', payload, ZERO_ADDR_HEX, 0]
+          ['0', '0', '0x0003', payload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
     });
@@ -761,9 +767,22 @@ contract('UtexoSourceEntrypoint', () => {
       );
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE - 1, feeLimit: FEE_LIMIT })
       );
+    });
+
+    it('reverts on a non-canonical authorization signature length', async () => {
+      await sendExpectSuccess(
+        token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT })
+      );
+      await sendExpectRevert(
+        entrypoint.deposit(
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, '0x1234']
+        ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
+      );
+
+      assert.equal((await token.balanceOf(oft.address).call()).toString(), '0');
     });
 
     it('reverts on malformed payload (too short to decode)', async () => {
@@ -772,7 +791,7 @@ contract('UtexoSourceEntrypoint', () => {
       );
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', '0x01020304', ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', '0x01020304', ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
     });
@@ -781,7 +800,7 @@ contract('UtexoSourceEntrypoint', () => {
       // Deliberately skip `token.approve`.
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
     });
@@ -795,7 +814,7 @@ contract('UtexoSourceEntrypoint', () => {
       );
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
     });
@@ -809,7 +828,7 @@ contract('UtexoSourceEntrypoint', () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadOver, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadOver, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
@@ -829,7 +848,7 @@ contract('UtexoSourceEntrypoint', () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
       await sendExpectRevert(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadLongAddr, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payloadLongAddr, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE, feeLimit: FEE_LIMIT })
       );
 
@@ -855,7 +874,7 @@ contract('UtexoSourceEntrypoint', () => {
       await token.approve(entrypoint.address, AMOUNT_LD).send({ feeLimit: FEE_LIMIT });
       await sendAndConfirm(
         entrypoint.deposit(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, refundTo, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, refundTo, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).send({ callValue: NATIVE_FEE + surplus, feeLimit: FEE_LIMIT })
       );
 
@@ -873,7 +892,7 @@ contract('UtexoSourceEntrypoint', () => {
       let threw = false;
       try {
         await entrypoint.quote(
-          ['0', '0', '0x0003', payload, ZERO_ADDR_HEX, 0]
+          ['0', '0', '0x0003', payload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).call();
       } catch (_) {
         threw = true;
@@ -886,7 +905,7 @@ contract('UtexoSourceEntrypoint', () => {
       let threw = false;
       try {
         await entrypoint.quote(
-          [AMOUNT_LD, AMOUNT_LD, '0x0003', invalidPayload, ZERO_ADDR_HEX, 0]
+          [AMOUNT_LD, AMOUNT_LD, '0x0003', invalidPayload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
         ).call();
       } catch (_) {
         threw = true;
@@ -901,7 +920,7 @@ contract('UtexoSourceEntrypoint', () => {
       );
 
       const quoted = await entrypoint.quote(
-        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0]
+        [AMOUNT_LD, AMOUNT_LD, '0x0003', payload, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]
       ).call();
 
       assert.equal(quoted.toString(), String(FEE));
@@ -914,7 +933,7 @@ contract('UtexoSourceEntrypoint', () => {
 
       let threw = false;
       try {
-        await entrypoint.quote([AMOUNT_LD, AMOUNT_LD, '0x0003', payloadOver, ZERO_ADDR_HEX, 0]).call();
+        await entrypoint.quote([AMOUNT_LD, AMOUNT_LD, '0x0003', payloadOver, ZERO_ADDR_HEX, 0, AUTHORIZATION_NONCE, AUTHORIZATION_DEADLINE, AUTHORIZATION_SIGNATURE]).call();
       } catch (e) {
         threw = true;
       }
