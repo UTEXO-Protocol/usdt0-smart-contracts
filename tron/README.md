@@ -4,6 +4,12 @@ Tron build of `UtexoSourceEntrypoint`. It sends source tokens through the Tron U
 OFT to the Utexo adapter on Arbitrum. The contract uses the same deposit ABI as the
 Ethereum entrypoint, with Solidity 0.8.26 and TVM dependencies resolved through npm.
 
+The caller supplies the backend-issued Bridge authorization nonce, deadline and
+65-byte EIP-712 signature in `DepositParams`. The Tron contract treats these fields
+as opaque data and forwards them in the compose payload; signature, deadline and
+replay verification happens only on the Arbitrum Bridge. The backend must sign the
+destination amount quoted by OFT, not blindly the source-requested amount.
+
 See the [root README](../README.md) for payload encoding, native fees and recovery.
 
 ## Setup
