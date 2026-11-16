@@ -19,6 +19,9 @@ interface IUtexoSourceEntrypoint {
     /// @param expectedComposeValue Native value expected by the Arbitrum compose call, in wei.
     ///                Must match the value delivered under the effective executor options.
     ///                The entrypoint includes it in the payload but does not validate the options.
+    /// @param authorizationNonce Globally unique unordered nonce issued by the backend.
+    /// @param authorizationDeadline Unix timestamp through which the Bridge authorization is valid.
+    /// @param authorizationSignature Opaque 65-byte EIP-712 signature verified only by Bridge.
     struct DepositParams {
         uint256 amountLD;
         uint256 minAmountLD;
@@ -26,6 +29,9 @@ interface IUtexoSourceEntrypoint {
         bytes payload;
         address refundTo;
         uint256 expectedComposeValue;
+        bytes32 authorizationNonce;
+        uint256 authorizationDeadline;
+        bytes authorizationSignature;
     }
 
     // =========================================================================
@@ -43,6 +49,7 @@ interface IUtexoSourceEntrypoint {
     error NativeRefundFailed();
     error SettlementDataTooLong(uint256 length, uint256 maxLength);
     error DestinationAddressTooLong(uint256 length, uint256 maxLength);
+    error InvalidAuthorizationSignatureLength(uint256 length);
 
     // =========================================================================
     // Events

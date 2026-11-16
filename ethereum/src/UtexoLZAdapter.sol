@@ -17,7 +17,7 @@ import {
 } from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
 import {IUtexoLZAdapter} from "./interfaces/IUtexoLZAdapter.sol";
-import {IBridge} from "@bridge-smart-contracts/interfaces/IBridge.sol";
+import {IBridgeFundsIn} from "./interfaces/IBridgeFundsIn.sol";
 
 /// @notice Local OFT peer lookup used when configuring routes.
 interface IOftPeerView {
@@ -42,6 +42,9 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
 
     /// @notice Maximum inbound destination address length, in bytes.
     uint256 public constant MAX_DESTINATION_ADDRESS_LENGTH = 512;
+
+    /// @notice Canonical ECDSA signature length accepted by Bridge.
+    uint256 public constant AUTHORIZATION_SIGNATURE_LENGTH = 65;
 
     /// @dev OFTCore queues its single compose callback at index zero.
     uint16 private constant OFT_COMPOSE_INDEX = 0;
@@ -205,7 +208,10 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             uint256 destinationChainId,
             string memory destinationAddress,
             bytes memory settlementData,
-            uint256 expectedComposeValue
+            uint256 expectedComposeValue,
+            bytes32 authorizationNonce,
+            uint256 authorizationDeadline,
+            bytes memory authorizationSignature
         ) {
             _composeIn(
                 _guid,
@@ -216,7 +222,12 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
                 destinationChainId,
                 destinationAddress,
                 settlementData,
-                expectedComposeValue
+                expectedComposeValue,
+                IBridgeFundsIn.FundsInAuthorization({
+                    authorizationNonce: authorizationNonce,
+                    deadline: authorizationDeadline,
+                    signature: authorizationSignature
+                })
             );
         } catch {
             _parkUndecodableCompose(_guid, amountLD);
@@ -234,10 +245,13 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             uint256 destinationChainId,
             string memory destinationAddress,
             bytes memory settlementData,
-            uint256 expectedComposeValue
+            uint256 expectedComposeValue,
+            bytes32 authorizationNonce,
+            uint256 authorizationDeadline,
+            bytes memory authorizationSignature
         )
     {
-        return abi.decode(payload, (uint256, bytes32, uint256, string, bytes, uint256));
+        return abi.decode(payload, (uint256, bytes32, uint256, string, bytes, uint256, bytes32, uint256, bytes));
     }
 
     /// @dev Validates decoded fields and forwards the deposit, recording a caught Bridge failure.
@@ -250,7 +264,8 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         uint256 destinationChainId,
         string memory destinationAddress,
         bytes memory settlementData,
-        uint256 expectedComposeValue
+        uint256 expectedComposeValue,
+        IBridgeFundsIn.FundsInAuthorization memory authorization
     ) private {
         if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
             _parkCompose(
@@ -282,6 +297,19 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
             );
             return;
         }
+        if (authorization.signature.length != AUTHORIZATION_SIGNATURE_LENGTH) {
+            _parkCompose(
+                guid,
+                amountLD,
+                sourceSender,
+                sourceChainId,
+                destinationChainId,
+                destinationAddress,
+                settlementData,
+                abi.encodeWithSelector(InvalidAuthorizationSignatureLength.selector, authorization.signature.length)
+            );
+            return;
+        }
         // Source chain id selects the Bridge route and fee rule; bind it to the transport EID.
         if (eidToChainId[srcEid_] != sourceChainId) {
             _parkCompose(
@@ -308,8 +336,8 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
 
         IERC20(token).safeIncreaseAllowance(bridge, amountLD);
 
-        try IBridge(bridge).fundsIn{value: msg.value}(
-            amountLD, sourceChainId, sourceSender, destinationChainId, destinationAddress, settlementData
+        try IBridgeFundsIn(bridge).fundsIn{value: msg.value}(
+            amountLD, sourceChainId, sourceSender, destinationChainId, destinationAddress, settlementData, authorization
         ) returns (
             bytes32 operationId
         ) {
