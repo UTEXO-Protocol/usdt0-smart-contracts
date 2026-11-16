@@ -781,32 +781,6 @@ contract UtexoLZAdapterTest is Test {
         assertEq(adapter.getStuckFunds(bytes32("ok-guid")).amountLD, 0, "no stuck record at boundary");
     }
 
-    function test_lzCompose_parksNonCanonicalAuthorizationSignatureLength() public {
-        uint256 amount = 1e6;
-        token.mint(address(adapter), amount);
-        bytes memory payload = abi.encode(
-            SOURCE_CHAIN_ID,
-            SOURCE_SENDER,
-            RGB_CHAIN_ID,
-            string("addr"),
-            EMPTY_SETTLEMENT_DATA,
-            uint256(0),
-            AUTHORIZATION_NONCE,
-            AUTHORIZATION_DEADLINE,
-            hex"1234"
-        );
-        bytes memory message = _encodeCompose(uint64(1), SRC_EID, amount, TRUSTED_ENTRYPOINT_B32, payload);
-        bytes32 guid = keccak256("short-authorization-signature");
-
-        vm.prank(endpoint);
-        adapter.lzCompose(address(oft), guid, message, address(0), "");
-
-        IUtexoLZAdapter.StuckFunds memory record = adapter.getStuckFunds(guid);
-        assertTrue(record.isStuck);
-        assertEq(record.amountLD, amount);
-        assertEq(token.balanceOf(address(bridge)), 0);
-    }
-
     function test_lzCompose_parksOversizedDestinationAddressWithoutStoringIt() public {
         uint256 amount = 1e6;
         token.mint(address(adapter), amount);

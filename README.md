@@ -40,8 +40,8 @@ Arbitrum: destination OFT -> UtexoLZAdapter -> Bridge -> route settlement module
 3. The destination OFT credits tokens to the Arbitrum adapter and queues a compose
    message. Token credit and compose execution occur in separate transactions.
 4. The endpoint invokes `lzCompose`. The adapter checks the local OFT, source
-   entrypoint, source chain id, authorization encoding and native value, then forwards
-   the authorization to `Bridge.fundsIn`.
+   entrypoint, source chain id and native value, then forwards the authorization
+   unchanged to `Bridge.fundsIn`.
 5. The selected Bridge route handles the settlement payload. A successful deposit
    emits `ComposeFundsIn` with the operation id returned by Bridge.
 

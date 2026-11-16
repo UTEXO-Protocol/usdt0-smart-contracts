@@ -43,9 +43,6 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
     /// @notice Maximum inbound destination address length, in bytes.
     uint256 public constant MAX_DESTINATION_ADDRESS_LENGTH = 512;
 
-    /// @notice Canonical ECDSA signature length accepted by Bridge.
-    uint256 public constant AUTHORIZATION_SIGNATURE_LENGTH = 65;
-
     /// @dev OFTCore queues its single compose callback at index zero.
     uint16 private constant OFT_COMPOSE_INDEX = 0;
 
@@ -294,19 +291,6 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
                 abi.encodeWithSelector(
                     DestinationAddressTooLong.selector, bytes(destinationAddress).length, MAX_DESTINATION_ADDRESS_LENGTH
                 )
-            );
-            return;
-        }
-        if (authorization.signature.length != AUTHORIZATION_SIGNATURE_LENGTH) {
-            _parkCompose(
-                guid,
-                amountLD,
-                sourceSender,
-                sourceChainId,
-                destinationChainId,
-                destinationAddress,
-                settlementData,
-                abi.encodeWithSelector(InvalidAuthorizationSignatureLength.selector, authorization.signature.length)
             );
             return;
         }
