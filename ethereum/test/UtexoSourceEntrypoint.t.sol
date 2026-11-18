@@ -40,6 +40,9 @@ contract UtexoSourceEntrypointTest is Test {
     uint32 constant DST_EID = 30110; // Arbitrum LayerZero eid
     bytes32 constant LZ_ADAPTER = bytes32(uint256(uint160(0xC0d1e0000000000000000000000000000000CAfe)));
     uint256 constant NATIVE_FEE = 0.01 ether;
+    bytes32 constant AUTHORIZATION_NONCE = keccak256("authorization-nonce");
+    uint256 constant AUTHORIZATION_DEADLINE = 2_000_000_000;
+    bytes internal AUTHORIZATION_SIGNATURE = new bytes(65);
 
     // -- Actors ---------------------------------------------------------------
     address user = makeAddr("user");
@@ -321,7 +324,15 @@ contract UtexoSourceEntrypointTest is Test {
 
         // Check the source identity added by the entrypoint.
         bytes memory expectedComposeMsg = abi.encode(
-            block.chainid, bytes32(uint256(uint160(user))), DEST_CHAIN_ID, DEST_ADDR, _rgbSettlementData(), uint256(0)
+            block.chainid,
+            bytes32(uint256(uint160(user))),
+            DEST_CHAIN_ID,
+            DEST_ADDR,
+            _rgbSettlementData(),
+            uint256(0),
+            AUTHORIZATION_NONCE,
+            AUTHORIZATION_DEADLINE,
+            AUTHORIZATION_SIGNATURE
         );
         assertEq(oft.lastComposeMsg(), expectedComposeMsg, "composeMsg = chainid + sourceSender + business");
 
@@ -356,7 +367,10 @@ contract UtexoSourceEntrypointTest is Test {
             extraOptions: extra,
             payload: abi.encode(DEST_CHAIN_ID, DEST_ADDR, _rgbSettlementData()),
             refundTo: address(0),
-            expectedComposeValue: 0
+            expectedComposeValue: 0,
+            authorizationNonce: AUTHORIZATION_NONCE,
+            authorizationDeadline: AUTHORIZATION_DEADLINE,
+            authorizationSignature: AUTHORIZATION_SIGNATURE
         });
 
         vm.startPrank(user);
@@ -376,7 +390,10 @@ contract UtexoSourceEntrypointTest is Test {
             extraOptions: hex"0003",
             payload: abi.encode(DEST_CHAIN_ID, DEST_ADDR, blob),
             refundTo: address(0),
-            expectedComposeValue: 0
+            expectedComposeValue: 0,
+            authorizationNonce: AUTHORIZATION_NONCE,
+            authorizationDeadline: AUTHORIZATION_DEADLINE,
+            authorizationSignature: AUTHORIZATION_SIGNATURE
         });
 
         vm.startPrank(user);
@@ -396,8 +413,17 @@ contract UtexoSourceEntrypointTest is Test {
         entrypoint.deposit{value: NATIVE_FEE}(p);
         vm.stopPrank();
 
-        bytes memory expectedComposeMsg =
-            abi.encode(block.chainid, bytes32(uint256(uint160(user))), DEST_CHAIN_ID, DEST_ADDR, blob, uint256(0));
+        bytes memory expectedComposeMsg = abi.encode(
+            block.chainid,
+            bytes32(uint256(uint160(user))),
+            DEST_CHAIN_ID,
+            DEST_ADDR,
+            blob,
+            uint256(0),
+            AUTHORIZATION_NONCE,
+            AUTHORIZATION_DEADLINE,
+            AUTHORIZATION_SIGNATURE
+        );
         assertEq(oft.lastComposeMsg(), expectedComposeMsg, "composeMsg carries settlementData");
     }
 
@@ -409,7 +435,10 @@ contract UtexoSourceEntrypointTest is Test {
             extraOptions: hex"0003",
             payload: abi.encode(DEST_CHAIN_ID, DEST_ADDR, EMPTY_SETTLEMENT_DATA),
             refundTo: address(0),
-            expectedComposeValue: ecv
+            expectedComposeValue: ecv,
+            authorizationNonce: AUTHORIZATION_NONCE,
+            authorizationDeadline: AUTHORIZATION_DEADLINE,
+            authorizationSignature: AUTHORIZATION_SIGNATURE
         });
 
         vm.startPrank(user);
@@ -418,7 +447,15 @@ contract UtexoSourceEntrypointTest is Test {
         vm.stopPrank();
 
         bytes memory expectedComposeMsg = abi.encode(
-            block.chainid, bytes32(uint256(uint160(user))), DEST_CHAIN_ID, DEST_ADDR, EMPTY_SETTLEMENT_DATA, ecv
+            block.chainid,
+            bytes32(uint256(uint160(user))),
+            DEST_CHAIN_ID,
+            DEST_ADDR,
+            EMPTY_SETTLEMENT_DATA,
+            ecv,
+            AUTHORIZATION_NONCE,
+            AUTHORIZATION_DEADLINE,
+            AUTHORIZATION_SIGNATURE
         );
         assertEq(oft.lastComposeMsg(), expectedComposeMsg, "composeMsg carries expectedComposeValue");
     }
@@ -441,8 +478,13 @@ contract UtexoSourceEntrypointTest is Test {
             uint256 destChainId,
             string memory destAddr,
             bytes memory settlementData,
-            uint256 ecv
-        ) = abi.decode(oft.lastComposeMsg(), (uint256, bytes32, uint256, string, bytes, uint256));
+            uint256 ecv,
+            bytes32 authorizationNonce,
+            uint256 authorizationDeadline,
+            bytes memory authorizationSignature
+        ) = abi.decode(
+            oft.lastComposeMsg(), (uint256, bytes32, uint256, string, bytes, uint256, bytes32, uint256, bytes)
+        );
 
         assertEq(chainId, block.chainid, "composeMsg[0] == block.chainid");
         assertEq(sourceSender, bytes32(uint256(uint160(depositor))), "sourceSender == depositor (authenticated)");
@@ -450,6 +492,9 @@ contract UtexoSourceEntrypointTest is Test {
         assertEq(destAddr, DEST_ADDR, "destAddr passthrough");
         assertEq(settlementData, _rgbSettlementData(), "settlementData passthrough");
         assertEq(ecv, 0, "expectedComposeValue passthrough");
+        assertEq(authorizationNonce, AUTHORIZATION_NONCE, "authorization nonce passthrough");
+        assertEq(authorizationDeadline, AUTHORIZATION_DEADLINE, "authorization deadline passthrough");
+        assertEq(authorizationSignature, AUTHORIZATION_SIGNATURE, "authorization signature passthrough");
     }
 
     function test_deposit_revertsOnZeroDestinationChainId() public {
@@ -495,7 +540,10 @@ contract UtexoSourceEntrypointTest is Test {
             extraOptions: hex"0003",
             payload: hex"01020304", // 4 bytes — too short to decode the tuple
             refundTo: address(0),
-            expectedComposeValue: 0
+            expectedComposeValue: 0,
+            authorizationNonce: AUTHORIZATION_NONCE,
+            authorizationDeadline: AUTHORIZATION_DEADLINE,
+            authorizationSignature: AUTHORIZATION_SIGNATURE
         });
 
         vm.startPrank(user);
@@ -519,7 +567,10 @@ contract UtexoSourceEntrypointTest is Test {
             extraOptions: hex"0003",
             payload: abi.encode(DEST_CHAIN_ID, DEST_ADDR, new bytes(cap + 1)),
             refundTo: address(0),
-            expectedComposeValue: 0
+            expectedComposeValue: 0,
+            authorizationNonce: AUTHORIZATION_NONCE,
+            authorizationDeadline: AUTHORIZATION_DEADLINE,
+            authorizationSignature: AUTHORIZATION_SIGNATURE
         });
 
         vm.startPrank(user);
@@ -539,7 +590,10 @@ contract UtexoSourceEntrypointTest is Test {
             extraOptions: hex"0003",
             payload: abi.encode(DEST_CHAIN_ID, DEST_ADDR, new bytes(entrypoint.MAX_SETTLEMENT_DATA_LENGTH())),
             refundTo: address(0),
-            expectedComposeValue: 0
+            expectedComposeValue: 0,
+            authorizationNonce: AUTHORIZATION_NONCE,
+            authorizationDeadline: AUTHORIZATION_DEADLINE,
+            authorizationSignature: AUTHORIZATION_SIGNATURE
         });
 
         vm.startPrank(user);
@@ -558,7 +612,10 @@ contract UtexoSourceEntrypointTest is Test {
             extraOptions: hex"0003",
             payload: abi.encode(DEST_CHAIN_ID, DEST_ADDR, new bytes(cap + 1)),
             refundTo: address(0),
-            expectedComposeValue: 0
+            expectedComposeValue: 0,
+            authorizationNonce: AUTHORIZATION_NONCE,
+            authorizationDeadline: AUTHORIZATION_DEADLINE,
+            authorizationSignature: AUTHORIZATION_SIGNATURE
         });
 
         vm.expectRevert(abi.encodeWithSelector(IUtexoSourceEntrypoint.SettlementDataTooLong.selector, cap + 1, cap));
@@ -573,7 +630,10 @@ contract UtexoSourceEntrypointTest is Test {
             extraOptions: hex"0003",
             payload: abi.encode(DEST_CHAIN_ID, string(new bytes(cap + 1)), EMPTY_SETTLEMENT_DATA),
             refundTo: address(0),
-            expectedComposeValue: 0
+            expectedComposeValue: 0,
+            authorizationNonce: AUTHORIZATION_NONCE,
+            authorizationDeadline: AUTHORIZATION_DEADLINE,
+            authorizationSignature: AUTHORIZATION_SIGNATURE
         });
 
         vm.startPrank(user);
@@ -595,7 +655,10 @@ contract UtexoSourceEntrypointTest is Test {
                 DEST_CHAIN_ID, string(new bytes(entrypoint.MAX_DESTINATION_ADDRESS_LENGTH())), EMPTY_SETTLEMENT_DATA
             ),
             refundTo: address(0),
-            expectedComposeValue: 0
+            expectedComposeValue: 0,
+            authorizationNonce: AUTHORIZATION_NONCE,
+            authorizationDeadline: AUTHORIZATION_DEADLINE,
+            authorizationSignature: AUTHORIZATION_SIGNATURE
         });
 
         vm.startPrank(user);
@@ -614,7 +677,10 @@ contract UtexoSourceEntrypointTest is Test {
             extraOptions: hex"0003",
             payload: abi.encode(DEST_CHAIN_ID, string(new bytes(cap + 1)), EMPTY_SETTLEMENT_DATA),
             refundTo: address(0),
-            expectedComposeValue: 0
+            expectedComposeValue: 0,
+            authorizationNonce: AUTHORIZATION_NONCE,
+            authorizationDeadline: AUTHORIZATION_DEADLINE,
+            authorizationSignature: AUTHORIZATION_SIGNATURE
         });
 
         vm.expectRevert(abi.encodeWithSelector(IUtexoSourceEntrypoint.DestinationAddressTooLong.selector, cap + 1, cap));
@@ -631,6 +697,24 @@ contract UtexoSourceEntrypointTest is Test {
         vm.prank(user);
         vm.expectRevert(IUtexoSourceEntrypoint.ZeroAmount.selector);
         entrypoint.deposit{value: NATIVE_FEE}(p);
+    }
+
+    function test_depositAndQuote_revertOnNonCanonicalAuthorizationSignatureLength() public {
+        IUtexoSourceEntrypoint.DepositParams memory p = _params(10e6);
+        p.authorizationSignature = hex"1234";
+
+        bytes memory expected =
+            abi.encodeWithSelector(IUtexoSourceEntrypoint.InvalidAuthorizationSignatureLength.selector, uint256(2));
+        vm.expectRevert(expected);
+        entrypoint.quote(p);
+
+        vm.startPrank(user);
+        token.approve(address(entrypoint), p.amountLD);
+        vm.expectRevert(expected);
+        entrypoint.deposit{value: NATIVE_FEE}(p);
+        vm.stopPrank();
+
+        assertEq(token.balanceOf(address(oft)), 0, "invalid authorization moves no tokens");
     }
 
     function test_deposit_revertsOnInsufficientNativeFee() public {
@@ -766,7 +850,7 @@ contract UtexoSourceEntrypointTest is Test {
     // Helpers
     // =========================================================================
 
-    function _params(uint256 amount) internal pure returns (IUtexoSourceEntrypoint.DepositParams memory) {
+    function _params(uint256 amount) internal view returns (IUtexoSourceEntrypoint.DepositParams memory) {
         return IUtexoSourceEntrypoint.DepositParams({
             amountLD: amount,
             minAmountLD: amount,
@@ -774,7 +858,10 @@ contract UtexoSourceEntrypointTest is Test {
             // RGB route: the lock ID and exclusive Arbitrum L2 deadline travel in settlementData.
             payload: abi.encode(DEST_CHAIN_ID, DEST_ADDR, _rgbSettlementData()),
             refundTo: address(0),
-            expectedComposeValue: 0
+            expectedComposeValue: 0,
+            authorizationNonce: AUTHORIZATION_NONCE,
+            authorizationDeadline: AUTHORIZATION_DEADLINE,
+            authorizationSignature: AUTHORIZATION_SIGNATURE
         });
     }
 

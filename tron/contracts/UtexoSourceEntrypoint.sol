@@ -34,6 +34,9 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
     /// @dev Must not exceed the matching UtexoLZAdapter limit; oversized composes revert without a record.
     uint256 public constant MAX_DESTINATION_ADDRESS_LENGTH = 512;
 
+    /// @notice Canonical ECDSA signature length accepted by the Arbitrum Bridge.
+    uint256 public constant AUTHORIZATION_SIGNATURE_LENGTH = 65;
+
     // =========================================================================
     // Immutables
     // =========================================================================
@@ -94,6 +97,9 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         returns (bytes32 guid)
     {
         if (depositParams.amountLD == 0) revert ZeroAmount();
+        if (depositParams.authorizationSignature.length != AUTHORIZATION_SIGNATURE_LENGTH) {
+            revert InvalidAuthorizationSignatureLength(depositParams.authorizationSignature.length);
+        }
 
         IERC20(token).safeTransferFrom(msg.sender, address(this), depositParams.amountLD);
         IERC20(token).safeIncreaseAllowance(oft, depositParams.amountLD);
@@ -118,7 +124,10 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             destinationChainId,
             destinationAddress,
             settlementData,
-            depositParams.expectedComposeValue
+            depositParams.expectedComposeValue,
+            depositParams.authorizationNonce,
+            depositParams.authorizationDeadline,
+            depositParams.authorizationSignature
         );
 
         SendParam memory sp = SendParam({
@@ -171,6 +180,9 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
         returns (uint256 nativeFee)
     {
         if (depositParams.amountLD == 0) revert ZeroAmount();
+        if (depositParams.authorizationSignature.length != AUTHORIZATION_SIGNATURE_LENGTH) {
+            revert InvalidAuthorizationSignatureLength(depositParams.authorizationSignature.length);
+        }
 
         (
             uint256 destinationChainId,
@@ -192,7 +204,10 @@ contract UtexoSourceEntrypoint is IUtexoSourceEntrypoint, Ownable2Step, Pausable
             destinationChainId,
             destinationAddress,
             settlementData,
-            depositParams.expectedComposeValue
+            depositParams.expectedComposeValue,
+            depositParams.authorizationNonce,
+            depositParams.authorizationDeadline,
+            depositParams.authorizationSignature
         );
         SendParam memory sp = SendParam({
             dstEid:       dstEid,

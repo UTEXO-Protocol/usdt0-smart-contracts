@@ -2,6 +2,7 @@
 pragma solidity 0.8.35;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IBridgeFundsIn} from "../../src/interfaces/IBridgeFundsIn.sol";
 
 /// @title MockBridge
 /// @notice Deposit stub that records inputs and optionally rejects calls.
@@ -26,6 +27,9 @@ contract MockBridge {
     string public lastDestinationAddress;
     bytes32 public lastSourceSender;
     bytes public lastSettlementData;
+    bytes32 public lastAuthorizationNonce;
+    uint256 public lastAuthorizationDeadline;
+    bytes public lastAuthorizationSignature;
     uint256 public lastMsgValue;
     address public lastCaller;
 
@@ -56,7 +60,8 @@ contract MockBridge {
         bytes32 sourceSender,
         uint256 destinationChainId,
         string calldata destinationAddress,
-        bytes calldata settlementData
+        bytes calldata settlementData,
+        IBridgeFundsIn.FundsInAuthorization calldata authorization
     ) external payable returns (bytes32 operationId) {
         require(!reverts, "MockBridge: forced revert");
         require(!checksMsgValue || msg.value == expectedMsgValue, "MockBridge: native value mismatch");
@@ -69,6 +74,9 @@ contract MockBridge {
         lastDestinationChainId = destinationChainId;
         lastDestinationAddress = destinationAddress;
         lastSettlementData = settlementData;
+        lastAuthorizationNonce = authorization.authorizationNonce;
+        lastAuthorizationDeadline = authorization.deadline;
+        lastAuthorizationSignature = authorization.signature;
         lastMsgValue = msg.value;
         lastCaller = msg.sender;
 

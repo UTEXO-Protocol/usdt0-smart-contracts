@@ -32,14 +32,16 @@ Source chain: caller -> UtexoSourceEntrypoint -> source OFT
 Arbitrum: destination OFT -> UtexoLZAdapter -> Bridge -> route settlement module
 ```
 
-1. The caller approves the source token and calls `deposit` with a token amount,
-   destination payload and LayerZero execution options.
-2. The entrypoint adds the source `block.chainid` and caller address to the compose
-   payload, quotes the LayerZero fee and submits the OFT send.
+1. The caller obtains a backend authorization, approves the source token and calls
+   `deposit` with the authorization, token amount, destination payload and LayerZero
+   execution options.
+2. The entrypoint adds the source `block.chainid`, caller address and opaque Bridge
+   authorization to the compose payload, quotes the LayerZero fee and submits the OFT send.
 3. The destination OFT credits tokens to the Arbitrum adapter and queues a compose
    message. Token credit and compose execution occur in separate transactions.
 4. The endpoint invokes `lzCompose`. The adapter checks the local OFT, source
-   entrypoint, source chain id and native value, then calls `Bridge.fundsIn`.
+   entrypoint, source chain id and native value, then forwards the authorization
+   unchanged to `Bridge.fundsIn`.
 5. The selected Bridge route handles the settlement payload. A successful deposit
    emits `ComposeFundsIn` with the operation id returned by Bridge.
 
@@ -64,6 +66,25 @@ They are different values:
 | `payload` | Final destination and settlement data, encoded as shown below |
 | `refundTo` | Source-chain native-surplus recipient and OFT refund address; zero selects the caller |
 | `expectedComposeValue` | Exact native value expected by the Arbitrum compose call, in wei |
+| `authorizationNonce` | Globally unique unordered `bytes32` nonce issued by the backend |
+| `authorizationDeadline` | Unix timestamp through which the Bridge authorization is valid |
+| `authorizationSignature` | 65-byte EIP-712 signature from the configured Bridge funds-in signer |
+
+The source entrypoint does not recover or verify the signer. It only requires the
+canonical 65-byte signature length and transports the authorization to Arbitrum,
+where Bridge performs deadline, replay and signature validation.
+
+The authorization amount must be the destination amount credited by OFT and carried
+in the LayerZero compose envelope. This is the amount the adapter passes to Bridge;
+it may differ from source-requested `amountLD` because of OFT fees or decimal rounding.
+
+The backend signs the Bridge EIP-712 authorization using the Arbitrum Bridge proxy
+and Arbitrum chain ID as the domain. The signed struct uses the Arbitrum USDT0 token,
+the quoted destination amount, the source chain ID and left-padded source caller,
+destination fields, settlement data, authorization nonce and deadline. The source
+chain ID inside the struct is therefore different from the EIP-712 domain chain ID.
+Choose a deadline long enough for LayerZero delivery and compose execution; an
+authorization that expires in transit is parked on Arbitrum for refund.
 
 The payload is:
 
@@ -98,7 +119,10 @@ abi.encode(
     destinationChainId,
     destinationAddress,
     settlementData,
-    expectedComposeValue
+    expectedComposeValue,
+    authorizationNonce,
+    authorizationDeadline,
+    authorizationSignature
 )
 ```
 
@@ -149,6 +173,9 @@ amount and native value, leaving the unknown business fields at their defaults. 
 `Bridge.fundsIn` reverts and allowance cleanup succeeds, the adapter records the
 full decoded deposit and revert data. A recorded failure emits `ComposeFundsInFailed`
 and completes the compose call.
+
+Expired, replayed or incorrectly signed authorizations are Bridge failures and follow
+the same recorded-refund path. The adapter does not retry a recorded authorization.
 
 After the endpoint and configured OFT authenticate the delivery, permanent entrypoint,
 payload-size and source-chain validation failures are recorded and complete compose.
