@@ -17,7 +17,7 @@ import {
 } from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
 import {IUtexoLZAdapter} from "./interfaces/IUtexoLZAdapter.sol";
-import {IBridgeFundsIn} from "./interfaces/IBridgeFundsIn.sol";
+import {IBridge} from "@bridge-smart-contracts/interfaces/IBridge.sol";
 
 /// @notice Local OFT peer lookup used when configuring routes.
 interface IOftPeerView {
@@ -220,7 +220,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
                 destinationAddress,
                 settlementData,
                 expectedComposeValue,
-                IBridgeFundsIn.FundsInAuthorization({
+                IBridge.FundsInAuthorization({
                     authorizationNonce: authorizationNonce,
                     deadline: authorizationDeadline,
                     signature: authorizationSignature
@@ -262,7 +262,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
         string memory destinationAddress,
         bytes memory settlementData,
         uint256 expectedComposeValue,
-        IBridgeFundsIn.FundsInAuthorization memory authorization
+        IBridge.FundsInAuthorization memory authorization
     ) private {
         if (settlementData.length > MAX_SETTLEMENT_DATA_LENGTH) {
             _parkCompose(
@@ -320,7 +320,7 @@ contract UtexoLZAdapter is IUtexoLZAdapter, IOAppComposer, ReentrancyGuard {
 
         IERC20(token).safeIncreaseAllowance(bridge, amountLD);
 
-        try IBridgeFundsIn(bridge).fundsIn{value: msg.value}(
+        try IBridge(bridge).fundsIn{value: msg.value}(
             amountLD, sourceChainId, sourceSender, destinationChainId, destinationAddress, settlementData, authorization
         ) returns (
             bytes32 operationId
