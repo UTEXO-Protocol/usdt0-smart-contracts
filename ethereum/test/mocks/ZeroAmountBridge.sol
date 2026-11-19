@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.35;
 
-import {IBridgeFundsIn} from "../../src/interfaces/IBridgeFundsIn.sol";
+import {IBridge} from "@bridge-smart-contracts/interfaces/IBridge.sol";
 
 /// @dev Deposit stub that rejects a zero token amount.
 contract ZeroAmountBridge {
@@ -14,7 +14,7 @@ contract ZeroAmountBridge {
         uint256,
         string calldata,
         bytes calldata,
-        IBridgeFundsIn.FundsInAuthorization calldata
+        IBridge.FundsInAuthorization calldata
     ) external payable returns (bytes32) {
         if (amount == 0) revert AmountBelowMinimum(0, 1);
         return bytes32(0);
