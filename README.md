@@ -96,16 +96,21 @@ The chain id must be nonzero. The entrypoint limits `destinationAddress` to 512 
 and `settlementData` to 128 bytes. These bounds are also enforced by the adapter.
 
 For the canonical RGB settlement module, use network id `827166`, an empty
-`destinationAddress`, and the lock ID plus an exclusive Arbitrum L2 block
-deadline encoded in settlement data:
+`destinationAddress` and exactly 65 bytes of settlement data: the lock ID, an
+exclusive Arbitrum L2 block deadline and one raw fee byte:
 
 ```solidity
 abi.encode(
     uint256(827166),
     "",
-    abi.encode(uint256(lockId), uint64(beforeBlock))
+    bytes.concat(abi.encode(uint256(lockId), uint64(beforeBlock)), bytes1(feeType))
 )
 ```
+
+`feeType` is `0` for the route's base fee or `1` for its witness fee, which must be
+configured. Keep it outside `abi.encode`, which would pad it to 32 bytes. The entrypoint
+and the adapter check only the maximum length. Bridge rejects any other length or fee
+type, and the adapter parks that deposit for refund.
 
 The RGB destination address is carried in the consignment. Other routes define their
 own settlement data; use empty settlement data for a route with `NullSettlementModule`.
