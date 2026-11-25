@@ -2,6 +2,9 @@
 src = "src"
 out = "out"
 libs = ["lib"]
+allow_paths = ["../lib/bridge-smart-contracts"]
+solc_version = "0.8.35"
+evm_version = "paris"
 optimizer = true
 optimizer_runs = 200
 via_ir = true
@@ -12,3 +15,11 @@ remappings = [
     "@layerzerolabs/lz-evm-oapp-v2/contracts/=lib/LayerZero-v2/packages/layerzero-v2/evm/oapp/contracts/",
     "@bridge-smart-contracts/=../lib/bridge-smart-contracts/ethereum/src/",
 ]
+
+[lint]
+ignore = ["test/**/*.sol"]
+
+# [fmt]
+# quote_style = "single"
+# bracket_spacing = true
+# line_length = 120

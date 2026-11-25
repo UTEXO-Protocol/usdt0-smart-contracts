@@ -1,37 +1,37 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.20;
+pragma solidity 0.8.35;
 
 /// @title IUtexoSourceEntrypoint
-/// @notice User-facing deposit entrypoint on source chains (Ethereum, OP, Base, …).
-///         Wraps the USDT0 OFT `send()` call so the visible protocol surface belongs
-///         to Utexo rather than directly to Tether's OFT contract.
+/// @notice Source-chain deposits into the Utexo bridge through USDT0 OFT.
 interface IUtexoSourceEntrypoint {
     // =========================================================================
     // Types
     // =========================================================================
 
-    /// @param amountLD     Amount of `token` to deposit, in local decimals.
-    /// @param minAmountLD  Minimum amount that must be credited on destination; serves
-    ///                     as a slippage guard against OFT-side fees.
-    /// @param extraOptions LayerZero executor options encoding `lzReceive` / `lzCompose`
-    ///                     gas budgets and the destination-side `msg.value` forwarded
-    ///                     into `UtexoLZAdapter.lzCompose`. Produced by the backend.
-    /// @param payload      Caller-supplied business payload encoded as
-    ///                     `abi.encode(uint256 destinationChainId, string destinationAddress, uint256 operationId, bytes settlementData)`.
-    ///                     `settlementData` is an opaque blob consumed by the
-    ///                     destination route's `SettlementModule` on Arbitrum
-    ///                     (empty `""` for routes registered with
-    ///                     `NullSettlementModule`, which is the default for
-    ///                     LZ-adapter flows). The entrypoint decodes the payload
-    ///                     on the source chain to validate the format (malformed
-    ///                     input reverts here, before any LZ fee is paid) and
-    ///                     re-encodes it with `block.chainid` prepended as the
-    ///                     actual `composeMsg` forwarded to LayerZero.
+    /// @param amountLD Requested token amount in local decimals; must be nonzero.
+    /// @param minAmountLD Minimum destination amount accepted by the OFT, in local decimals.
+    /// @param extraOptions LayerZero executor options, combined with the OFT's enforced options.
+    /// @param payload `abi.encode(uint256 destinationChainId, string destinationAddress, bytes settlementData)`.
+    ///                The chain id must be nonzero. RGB uses id 827166, an empty address and
+    ///                `abi.encode(uint256 lockId, uint64 beforeBlock)` for the canonical RGB
+    ///                settlement module; `beforeBlock` is an exclusive Arbitrum L2 deadline.
+    /// @param refundTo Native-surplus recipient and OFT refund address; zero selects the caller.
+    /// @param expectedComposeValue Native value expected by the Arbitrum compose call, in wei.
+    ///                Must match the value delivered under the effective executor options.
+    ///                The entrypoint includes it in the payload but does not validate the options.
+    /// @param authorizationNonce Globally unique unordered nonce issued by the backend.
+    /// @param authorizationDeadline Unix timestamp through which the Bridge authorization is valid.
+    /// @param authorizationSignature Opaque 65-byte EIP-712 signature verified only by Bridge.
     struct DepositParams {
         uint256 amountLD;
         uint256 minAmountLD;
-        bytes   extraOptions;
-        bytes   payload;
+        bytes extraOptions;
+        bytes payload;
+        address refundTo;
+        uint256 expectedComposeValue;
+        bytes32 authorizationNonce;
+        uint256 authorizationDeadline;
+        bytes authorizationSignature;
     }
 
     // =========================================================================
@@ -40,44 +40,37 @@ interface IUtexoSourceEntrypoint {
 
     error InvalidTokenAddress();
     error InvalidOftAddress();
+    error OftTokenMismatch(address oft, address actualToken, address expectedToken);
     error InvalidLZAdapter();
     error InvalidDstEid();
+    error InvalidDestinationChainId();
     error ZeroAmount();
     error InsufficientNativeFee(uint256 provided, uint256 required);
     error NativeRefundFailed();
+    error SettlementDataTooLong(uint256 length, uint256 maxLength);
+    error DestinationAddressTooLong(uint256 length, uint256 maxLength);
+    error InvalidAuthorizationSignatureLength(uint256 length);
 
     // =========================================================================
     // Events
     // =========================================================================
 
-    /// @notice Emitted for every successful deposit forwarded to the USDT0 OFT.
-    /// @param guid                LayerZero message guid; correlates with the compose
-    ///                            event on the destination chain.
-    /// @param user                Address whose tokens were pulled and charged for the
-    ///                            LZ fee.
-    /// @param amountLD            Amount of `token` forwarded into the OFT (gross,
-    ///                            pre-OFT-fee).
-    /// @param sourceChainId       `block.chainid` captured at deposit time; embedded
-    ///                            in the `composeMsg` and consumed by `Bridge.fundsIn`
-    ///                            on Arbitrum for commission routing.
-    /// @param destinationChainId  Final destination chain id (`uint256`; passes through
-    ///                            to Bridge unchanged).
-    /// @param destinationAddress  Final recipient address on `destinationChainId`.
-    /// @param operationId         Backend-assigned operation id (consumed by the
-    ///                            destination route's settlement module on Bridge).
-    /// @param settlementData      Opaque blob plumbed through to
-    ///                            `Bridge.fundsIn` and into the destination
-    ///                            route's `SettlementModule.onFundsIn`. Empty
-    ///                            for routes using `NullSettlementModule`.
+    /// @notice Emitted after a deposit is submitted to the source OFT.
+    /// @param guid LayerZero message identifier.
+    /// @param user Caller whose tokens and native fee fund the deposit.
+    /// @param amountLD Requested source amount before OFT fees or rounding.
+    /// @param sourceChainId Source `block.chainid` captured at deposit time.
+    /// @param destinationChainId Final destination network id, distinct from the LayerZero EID.
+    /// @param destinationAddress Destination address supplied in the deposit payload.
+    /// @param settlementData Opaque payload interpreted by the destination settlement module.
     event Deposit(
         bytes32 indexed guid,
         address indexed user,
         uint256 amountLD,
         uint256 sourceChainId,
         uint256 destinationChainId,
-        string  destinationAddress,
-        uint256 operationId,
-        bytes   settlementData
+        string destinationAddress,
+        bytes settlementData
     );
 
     // =========================================================================
@@ -93,18 +86,16 @@ interface IUtexoSourceEntrypoint {
     // User entry point
     // =========================================================================
 
-    /// @notice Pulls `p.amountLD` of `token` from the caller, forwards it into the
-    ///         USDT0 OFT, and requests LayerZero delivery to the Utexo
-    ///         `UtexoLZAdapter` on the destination chain. The entrypoint
-    ///         constructs the `composeMsg` itself with `block.chainid` as the first
-    ///         field so the caller cannot spoof the source-chain identifier that
-    ///         `Bridge` will use for commission routing.
-    /// @dev    `msg.value` must cover the LayerZero native fee returned by
-    ///         `IOFT.quoteSend`. Surplus is refunded to the caller.
-    function deposit(DepositParams calldata p) external payable returns (bytes32 guid);
+    /// @notice Sends a deposit through OFT to the configured Arbitrum adapter.
+    /// @dev Binds `block.chainid` and the caller as source identity. `msg.value` must cover the
+    ///      LayerZero quote; surplus goes to `depositParams.refundTo`, or the caller when it is zero.
+    /// @param depositParams Token amount, execution options and destination payload.
+    /// @return guid LayerZero message identifier.
+    function deposit(DepositParams calldata depositParams) external payable returns (bytes32 guid);
 
-    /// @notice Convenience re-export of `IOFT.quoteSend` so frontends can quote without
-    ///         knowing the OFT address / hard-coded `dstEid` / `lzAdapter`. Builds
-    ///         the same `composeMsg` as `deposit`.
-    function quote(DepositParams calldata p) external view returns (uint256 nativeFee);
+    /// @notice Quotes the LayerZero native fee for an OFT transfer with compose execution.
+    /// @dev Remains available while deposits are paused. A quote does not check balances or allowance.
+    /// @param depositParams Token amount, execution options and destination payload.
+    /// @return nativeFee LayerZero fee in source-chain native units.
+    function quote(DepositParams calldata depositParams) external view returns (uint256 nativeFee);
 }

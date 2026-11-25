@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/ci.yml"
+      - "ethereum/**"
+      - "tron/**"
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evm-foundry:
+    name: EVM Foundry build and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ethereum
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+
+      - name: Show Foundry version
+        run: forge --version
+
+      - name: Check formatting
+        run: forge fmt --check
+
+      - name: Build contracts
+        run: forge build --sizes
+
+      - name: Run tests
+        run: forge test -vv
+
+  tron-compile:
+    name: Tron compile
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tron
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: tron/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Compile contracts
+        run: npx tronbox compile
+

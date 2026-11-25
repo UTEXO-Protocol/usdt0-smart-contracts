@@ -1,26 +1,26 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.20;
+pragma solidity 0.8.35;
 
-import { IERC20 } from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {
     IOFT,
     SendParam,
     OFTLimit,
     OFTFeeDetail,
     OFTReceipt
-} from '@layerzerolabs/lz-evm-oapp-v2/contracts/oft/interfaces/IOFT.sol';
+} from "@layerzerolabs/lz-evm-oapp-v2/contracts/oft/interfaces/IOFT.sol";
 import {
     MessagingFee,
     MessagingReceipt
-} from '@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol';
+} from "@layerzerolabs/lz-evm-protocol-v2/contracts/interfaces/ILayerZeroEndpointV2.sol";
 
 /// @title MockOFT
-/// @notice Minimal OFT stub for testing the Utexo source entrypoint and adapter in
-///         isolation. Records the last `send()` call so tests can assert that
-///         `SendParam` was forwarded byte-for-byte. Pulls the tokens to simulate the
-///         cross-chain lock.
+/// @notice OFT stub with a configurable native fee that pulls tokens and records send parameters.
 contract MockOFT is IOFT {
     address public immutable override token;
+
+    /// @notice LayerZero peers configured for route-validation tests.
+    mapping(uint32 eid => bytes32 peer) public peers;
 
     /// Native fee the stub quotes and expects on `send()`.
     uint256 public nativeFeeQuote;
@@ -32,20 +32,39 @@ contract MockOFT is IOFT {
     uint64 public guidCounter;
 
     // Last-call recording -----------------------------------------------------
-    SendParam     internal _lastSendParam;
-    MessagingFee  public   lastFee;
-    address       public   lastRefundAddress;
-    uint256       public   lastMsgValue;
+    SendParam internal _lastSendParam;
+    MessagingFee public lastFee;
+    address public lastRefundAddress;
+    uint256 public lastMsgValue;
 
-    // Accessors (avoid returning the full struct to keep callers out of
-    // stack-too-deep territory).
-    function lastDstEid()       external view returns (uint32)  { return _lastSendParam.dstEid; }
-    function lastTo()           external view returns (bytes32) { return _lastSendParam.to; }
-    function lastAmountLD()     external view returns (uint256) { return _lastSendParam.amountLD; }
-    function lastMinAmountLD()  external view returns (uint256) { return _lastSendParam.minAmountLD; }
-    function lastExtraOptions() external view returns (bytes memory) { return _lastSendParam.extraOptions; }
-    function lastComposeMsg()   external view returns (bytes memory) { return _lastSendParam.composeMsg; }
-    function lastOftCmd()       external view returns (bytes memory) { return _lastSendParam.oftCmd; }
+    // Send-parameter accessors.
+    function lastDstEid() external view returns (uint32) {
+        return _lastSendParam.dstEid;
+    }
+
+    function lastTo() external view returns (bytes32) {
+        return _lastSendParam.to;
+    }
+
+    function lastAmountLD() external view returns (uint256) {
+        return _lastSendParam.amountLD;
+    }
+
+    function lastMinAmountLD() external view returns (uint256) {
+        return _lastSendParam.minAmountLD;
+    }
+
+    function lastExtraOptions() external view returns (bytes memory) {
+        return _lastSendParam.extraOptions;
+    }
+
+    function lastComposeMsg() external view returns (bytes memory) {
+        return _lastSendParam.composeMsg;
+    }
+
+    function lastOftCmd() external view returns (bytes memory) {
+        return _lastSendParam.oftCmd;
+    }
 
     constructor(address token_) {
         token = token_;
@@ -57,6 +76,10 @@ contract MockOFT is IOFT {
 
     function setSendReverts(bool v) external {
         sendReverts = v;
+    }
+
+    function setPeer(uint32 eid, bytes32 peer) external {
+        peers[eid] = peer;
     }
 
     // -- IOFT identity stubs ---------------------------------------------------
@@ -80,55 +103,38 @@ contract MockOFT is IOFT {
         returns (OFTLimit memory, OFTFeeDetail[] memory, OFTReceipt memory)
     {
         return (
-            OFTLimit({ minAmountLD: 0, maxAmountLD: type(uint256).max }),
+            OFTLimit({minAmountLD: 0, maxAmountLD: type(uint256).max}),
             new OFTFeeDetail[](0),
-            OFTReceipt({ amountSentLD: sendParam.amountLD, amountReceivedLD: sendParam.amountLD })
+            OFTReceipt({amountSentLD: sendParam.amountLD, amountReceivedLD: sendParam.amountLD})
         );
     }
 
     // -- Quote / Send ----------------------------------------------------------
 
-    function quoteSend(SendParam calldata, bool)
-        external
-        view
-        override
-        returns (MessagingFee memory)
-    {
-        return MessagingFee({ nativeFee: nativeFeeQuote, lzTokenFee: 0 });
+    function quoteSend(SendParam calldata, bool) external view override returns (MessagingFee memory) {
+        return MessagingFee({nativeFee: nativeFeeQuote, lzTokenFee: 0});
     }
 
-    function send(
-        SendParam calldata sendParam,
-        MessagingFee calldata fee,
-        address refundAddress
-    )
+    function send(SendParam calldata sendParam, MessagingFee calldata fee, address refundAddress)
         external
         payable
         override
         returns (MessagingReceipt memory receipt, OFTReceipt memory oftReceipt)
     {
-        require(!sendReverts, 'MockOFT: forced revert');
-        require(msg.value == fee.nativeFee, 'MockOFT: msg.value != nativeFee');
-        require(fee.nativeFee == nativeFeeQuote, 'MockOFT: stale fee');
+        require(!sendReverts, "MockOFT: forced revert");
+        require(msg.value == fee.nativeFee, "MockOFT: msg.value != nativeFee");
+        require(fee.nativeFee == nativeFeeQuote, "MockOFT: stale fee");
 
-        // Pull tokens — proves the caller set the allowance correctly.
         IERC20(token).transferFrom(msg.sender, address(this), sendParam.amountLD);
 
-        // Record for assertions.
-        _lastSendParam    = sendParam;
-        lastFee           = fee;
+        _lastSendParam = sendParam;
+        lastFee = fee;
         lastRefundAddress = refundAddress;
-        lastMsgValue      = msg.value;
+        lastMsgValue = msg.value;
 
         guidCounter += 1;
-        receipt = MessagingReceipt({
-            guid:  keccak256(abi.encode('mock-guid', guidCounter)),
-            nonce: guidCounter,
-            fee:   fee
-        });
-        oftReceipt = OFTReceipt({
-            amountSentLD:     sendParam.amountLD,
-            amountReceivedLD: sendParam.amountLD
-        });
+        receipt =
+            MessagingReceipt({guid: keccak256(abi.encode("mock-guid", guidCounter)), nonce: guidCounter, fee: fee});
+        oftReceipt = OFTReceipt({amountSentLD: sendParam.amountLD, amountReceivedLD: sendParam.amountLD});
     }
 }

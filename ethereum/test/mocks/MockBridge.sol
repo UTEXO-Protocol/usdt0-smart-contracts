@@ -1,36 +1,40 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.20;
+pragma solidity 0.8.35;
 
-import { IERC20 } from '@openzeppelin/contracts/token/ERC20/IERC20.sol';
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IBridge} from "@bridge-smart-contracts/interfaces/IBridge.sol";
 
 /// @title MockBridge
-/// @notice Minimal Bridge stub for testing `UtexoLZAdapter` in isolation. Pulls
-///         the locked tokens via `transferFrom` (proves the caller set the
-///         allowance) and records the call args + forwarded `msg.value` so
-///         tests can assert byte-for-byte forwarding.
-///
-/// @dev    Implements only the adapter-only `fundsIn` overload that
-///         `UtexoLZAdapter.lzCompose` invokes. Not declared as `IBridge` —
-///         Solidity dispatches by selector at runtime, so a matching function
-///         signature on this stub is sufficient. The full upstream `IBridge`
-///         lives in the bridge-smart-contracts submodule and would require
-///         stubbing many unrelated members (`fundsOut`, `setLZAdapter`, …)
-///         that the adapter never calls in tests.
+/// @notice Deposit stub that records inputs and optionally rejects calls.
+/// @dev Implements only the adapter-facing fundsIn overload.
 contract MockBridge {
     address public immutable token;
 
     /// Force `fundsIn` to revert — used by failure-path tests.
     bool public reverts;
 
+    /// @notice Whether deposits must match the configured native value.
+    bool public checksMsgValue;
+    uint256 public expectedMsgValue;
+
+    /// @notice Optional operation-id override; zero selects the mock's deterministic derivation.
+    bytes32 public operationIdToReturn;
+
     // Last-call recording -----------------------------------------------------
     uint256 public lastAmount;
     uint256 public lastSourceChainId;
     uint256 public lastDestinationChainId;
-    string  public lastDestinationAddress;
-    uint256 public lastOperationId;
-    bytes   public lastSettlementData;
+    string public lastDestinationAddress;
+    bytes32 public lastSourceSender;
+    bytes public lastSettlementData;
+    bytes32 public lastAuthorizationNonce;
+    uint256 public lastAuthorizationDeadline;
+    bytes public lastAuthorizationSignature;
     uint256 public lastMsgValue;
     address public lastCaller;
+
+    /// @notice Operation id returned by the last successful deposit.
+    bytes32 public lastReturnedOperationId;
 
     constructor(address token_) {
         token = token_;
@@ -40,30 +44,48 @@ contract MockBridge {
         reverts = v;
     }
 
-    /// @notice Mirrors the adapter-only overload
-    ///         `Bridge.fundsIn(uint256 amount, uint256 sourceChainId,
-    ///                         uint256 destinationChainId, string destinationAddress,
-    ///                         uint256 operationId, bytes settlementData)`.
+    function setExpectedMsgValue(uint256 expected) external {
+        checksMsgValue = true;
+        expectedMsgValue = expected;
+    }
+
+    function setOperationIdToReturn(bytes32 v) external {
+        operationIdToReturn = v;
+    }
+
+    /// @notice Pulls tokens and records the adapter deposit parameters.
     function fundsIn(
         uint256 amount,
         uint256 sourceChainId,
+        bytes32 sourceSender,
         uint256 destinationChainId,
-        string  calldata destinationAddress,
-        uint256 operationId,
-        bytes   calldata settlementData
-    ) external payable {
-        require(!reverts, 'MockBridge: forced revert');
+        string calldata destinationAddress,
+        bytes calldata settlementData,
+        IBridge.FundsInAuthorization calldata authorization
+    ) external payable returns (bytes32 operationId) {
+        require(!reverts, "MockBridge: forced revert");
+        require(!checksMsgValue || msg.value == expectedMsgValue, "MockBridge: native value mismatch");
 
         IERC20(token).transferFrom(msg.sender, address(this), amount);
 
-        lastAmount             = amount;
-        lastSourceChainId      = sourceChainId;
+        lastAmount = amount;
+        lastSourceChainId = sourceChainId;
+        lastSourceSender = sourceSender;
         lastDestinationChainId = destinationChainId;
         lastDestinationAddress = destinationAddress;
-        lastOperationId        = operationId;
-        lastSettlementData     = settlementData;
-        lastMsgValue           = msg.value;
-        lastCaller             = msg.sender;
+        lastSettlementData = settlementData;
+        lastAuthorizationNonce = authorization.authorizationNonce;
+        lastAuthorizationDeadline = authorization.deadline;
+        lastAuthorizationSignature = authorization.signature;
+        lastMsgValue = msg.value;
+        lastCaller = msg.sender;
+
+        operationId = operationIdToReturn != bytes32(0)
+            ? operationIdToReturn
+            : keccak256(
+                abi.encode(sourceChainId, sourceSender, amount, destinationChainId, destinationAddress, settlementData)
+            );
+        lastReturnedOperationId = operationId;
     }
 
     receive() external payable {}

@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "dotenv": "^17.4.2",
-    "tronbox": "^4.7.1",
+    "tronbox": "^4.8.0",
     "tronweb": "^6.3.0"
   }
 }
