@@ -12,9 +12,10 @@ interface IUtexoSourceEntrypoint {
     /// @param minAmountLD Minimum destination amount accepted by the OFT, in local decimals.
     /// @param extraOptions LayerZero executor options, combined with the OFT's enforced options.
     /// @param payload `abi.encode(uint256 destinationChainId, string destinationAddress, bytes settlementData)`.
-    ///                The chain id must be nonzero. RGB uses id 827166, an empty address and
-    ///                `abi.encode(uint256 lockId, uint64 beforeBlock)` for the canonical RGB
-    ///                settlement module; `beforeBlock` is an exclusive Arbitrum L2 deadline.
+    ///                The chain id must be nonzero. RGB uses id 827166, an empty address and, for the
+    ///                canonical RGB settlement module, the 65-byte settlement data
+    ///                `bytes.concat(abi.encode(uint256 lockId, uint64 beforeBlock), bytes1(feeType))`;
+    ///                `beforeBlock` is an exclusive Arbitrum L2 deadline, `feeType` is 0 (base) or 1 (witness).
     /// @param refundTo Native-surplus recipient and OFT refund address; zero selects the caller.
     /// @param expectedComposeValue Native value expected by the Arbitrum compose call, in wei.
     ///                Must match the value delivered under the effective executor options.
